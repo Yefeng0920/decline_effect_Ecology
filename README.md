@@ -4,14 +4,11 @@
 
 # This repository contains three parts:
 
-- the code to reproduce the analyses in the above paper
-dataset - all effect size data edited 24-08.csv; code - Comment_decline_effect_reanalyses.Rmd
+- the code to reproduce the analyses in the above paper: dataset - all effect size data edited 24-08.csv; code - Comment_decline_effect_reanalyses.Rmd
 
-- the code to reproduce the Figures used in the above paper
-processed data - model_est_centered.l3.csv; code - figs_Comment_decline_effect.Rmd
+- the code to reproduce the Figures used in the above paper: dataset - model_est_centered.l3.csv; code - figs_Comment_decline_effect.Rmd
 
-- a tutorial on how to properly conduct and report publication bias test
-dataset - montagano.et.al.2019.ecol.letts.csv; code - Tutorial on testing publication bias.Rmd; html version - Tutorial-on-testing-publication-bias.html
+- a tutorial on how to properly conduct and report publication bias test: dataset - montagano.et.al.2019.ecol.letts.csv; code - Tutorial on testing publication bias.Rmd; html version - Tutorial-on-testing-publication-bias.html
 
 # Contact information
 Yefeng Yang1,2,3, Malgorzata Lagisz1, Shinichi Nakagawa1,4
