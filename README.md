@@ -1,8 +1,8 @@
-# Paper information
+# Article
 
 *Yefeng Yang, Malgorzata Lagisz, Shinichi Nakagawa, 2022. Decline effects are rare in ecology: Comment. EcoEvoRxiv.*
 
-# This repository contains three parts:
+# Contents
 
 - the code to reproduce the analyses in the above paper: all effect size data edited 24-08.csv - dataset ;  Comment_decline_effect_reanalyses.Rmd - code
 
@@ -10,7 +10,7 @@
 
 - a tutorial on how to properly conduct and report publication bias test: montagano.et.al.2019.ecol.letts.csv; Tutorial on testing publication bias.Rmd - code; Tutorial-on-testing-publication-bias.html - html version
 
-# Contact information
+# Authors
 Yefeng Yang1,2,3, Malgorzata Lagisz1, Shinichi Nakagawa1,4
 
 1. Evolution & Ecology Research Centre and School of Biological, Earth and Environmental Sciences, University of New South Wales, Sydney, NSW 2052, Australia
