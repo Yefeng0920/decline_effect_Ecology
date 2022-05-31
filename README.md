@@ -4,11 +4,22 @@
 
 # Contents
 
-- the code to reproduce the analyses in the above paper: all effect size data edited 24-08.csv - dataset ;  Comment_decline_effect_reanalyses.Rmd - code
+## R
 
-- the code to reproduce the Figures used in the above paper: model_est_centered.l3.csv - dataset; figs_Comment_decline_effect.Rmd - code; Figure1.pdf & Figure2.pdf - Figures used in the above paper
+- Comment_decline_effect_reanalyses.Rmd - code to reproduce the analyses in the paper
+- figs_Comment_decline_effect.Rmd - code to reproduce the figures presented in the paper
+- Tutorial on testing publication bias.Rmd - a tutorial on how to properly conduct and report publication bias test
+- Tutorial-on-testing-publication-bias.html - html version of the tutorial
 
-- a tutorial on how to properly conduct and report publication bias test: montagano.et.al.2019.ecol.letts.csv; Tutorial on testing publication bias.Rmd - code; Tutorial-on-testing-publication-bias.html - html version
+## data
+
+- all effect size data edited 24-08.csv - dataset used in Comment_decline_effect_reanalyses.Rmd
+-  model_est_centered.l3.csv - dataset used in figs_Comment_decline_effect.Rmd
+-  montagano.et.al.2019.ecol.letts.csv - dataset used in Tutorial on testing publication bias.Rmd
+
+## figures
+
+Figure1.pdf & Figure2.pdf - Figures used in the paper
 
 # Authors
 Yefeng Yang1,2,3, Malgorzata Lagisz1, Shinichi Nakagawa1,4
