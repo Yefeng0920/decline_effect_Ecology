@@ -1,0 +1,2152 @@
+---
+title: "Decline effects are rare in ecology: Comment"
+author: "Yefeng Yang, Malgorzata Lagisz, Shinichi Nakagawa"
+output: html_document
+---
+
+# Setup
+
+```{r setup, echo = FALSE}
+# Tidy
+ # rm(list=ls())
+ # graphics.off()
+
+# Preparing workspace
+knitr::opts_chunk$set(echo = TRUE, include = TRUE)
+
+# Loading packages
+pacman::p_load(knitr, # knit markdown
+               readxl, 
+               readr, 
+               metafor, 
+               dplyr, 
+               tidyverse, 
+               janitor, # generate 1-, 2-way table
+               patchwork, # layout of plots
+               cowplot, 
+               ggpubr,
+               gridExtra,
+               orchaRd, # forest-like plot
+               gridGraphics, # Redraw Base Graphics Using 'grid' Graphics. `gridGraphics` is required to handle base-R plots.
+               dabestr,
+               here,
+               retrodesign,
+               lme4,
+               car, # logit transformation, car::logit()
+               boot, # Bootstrap Resampling
+               lmerTest, # get p-valus from lme4 model, but need to re-fit the model lmerTest::lme4
+               ggthemes,
+               modi, # weighted variance
+               clubSandwich
+               )
+
+# Function to calculate power (two-tail) for meta-analysis
+power.ma_Shinichi <- function(mu, SE, alpha = 0.05) {
+  2-pnorm(qnorm(1-alpha/2)-abs(mu)/SE)-pnorm(qnorm(1-alpha/2)+abs(mu)/SE)
+  } # or power.ma_Shinichi1 <- function(mu,SE){1 - pnorm(qnorm(1-0.05/2)-abs(mu)/SE) + pnorm(-qnorm(1-0.05/2)-abs(mu)/SE)}
+
+
+# Function for power analysis for empirical data point
+power.individual_Shinichi <- function(mu, se, alpha = 0.05) {
+  2-pnorm(qnorm(1-alpha/2)-abs(mu)/se)-pnorm(qnorm(1-alpha/2)+abs(mu)/se)} # two-tailed power
+
+
+# Function for Type S error for empirical data point
+error_S <- function(mu, se, alpha = 0.05){
+  #z <- qnorm(1 - alpha/2) # Z-score or quantile
+  p.u <- 1 - pnorm(qnorm(1 - alpha/2) - abs(mu)/se) # upper-tail probability
+  p.l <- pnorm(-qnorm(1 - alpha/2) - abs(mu)/se) # lower-tail probability
+  power <- p.u + p.l # upper + lower
+  errorS <- p.l/power # percentage of the opposite direction
+  return(errorS)
+} 
+
+# Function for Type M error for empirical data point
+error_M <- function(mu, se, alpha = 0.05, N = 10000) {
+    est.random <- rnorm(n=N, mean = mu, sd = se)
+    # est.random <- mu + se*rnorm(n=N, mean=0, sd=1)
+    sig.index <- abs(est.random) > se*qnorm(1 - alpha/2)
+    overestimate <- mean(abs(est.random)[sig.index])/abs(mu) # ratio is regardnesss of sign, so we need absolute value
+    absolute_error <- overestimate*abs(mu) - abs(mu)
+    relative_error <- absolute_error/(overestimate*abs(mu))
+  return(abs(overestimate) %>% round(3))
+}
+
+
+error_M2 <- function(mu, se, alpha = 0.05, N = 10000) {
+    est.random <- rnorm(n=N, mean = mu, sd = se)
+    # est.random <- mu + se*rnorm(n=N, mean=0, sd=1)
+    sig.index <- abs(est.random) > se*qnorm(1 - alpha/2)
+    overestimate <- mean(abs(est.random)[sig.index])/abs(mu) # ratio is regardnesss of sign, so we need absolute value
+    absolute_error <- overestimate*abs(mu) - abs(mu)
+    relative_error <- absolute_error/(overestimate*abs(mu))
+  return(abs(relative_error) %>% round(3))
+} # relative error: (M - 1) / M
+
+
+
+# meta-analysis of magnitude
+## folded effect size
+folded_es <-function(mean, variance){ # the sampling variance of magnitude   
+  mu <- mean
+  sigma <- sqrt(variance)
+  fold_mu <- sigma*sqrt(2/pi)*exp((-mu^2)/(2*sigma^2)) + mu*(1 - 2*pnorm(-mu/sigma))
+  fold_mu
+}
+## folded error
+folded_error <- function(mean, variance){ # the sampling variance of magnitude   
+  mu <- mean
+  sigma <- sqrt(variance)
+  fold_mu <- sigma*sqrt(2/pi)*exp((-mu^2)/(2*sigma^2)) + mu*(1 - 2*pnorm(-mu/sigma))
+  fold_se <- sqrt(mu^2 + sigma^2 - fold_mu^2)
+  # adding se to make bigger mean
+  fold_v <- fold_se^2
+  fold_v
+}
+
+
+# custom function for extracting mean and CI from each metafor model
+estimates.CI <- function(model){
+  db.mf <- data.frame(model$b,row.names = 1:nrow(model$b))
+  db.mf <- cbind(db.mf,model$ci.lb,model$ci.ub,row.names(model$b))
+  names(db.mf) <- c("mean","lower","upper","estimate")
+  return(db.mf[,c("estimate","mean","lower","upper")])
+}
+```
+
+
+# Import data and preprocess
+
+Import the data (the .csv file named 'all effect size data edited 24-08')
+
+```{r}
+dat_all <- read.csv(file = "data/all effect size data edited 24-08.csv", header = TRUE)
+
+# check data
+head(dat_all)
+# remove NAs, 
+dat_all <- dat_all[!is.na(dat_all$eff.size) & !is.na(dat_all$var.eff.size) & !is.na(dat_all$study.year), ]
+# remove negative and zero variance (sampling variance should be positive when fitting models)
+dat_all <- dat_all[dat_all$var.eff.size != 0, ]
+
+
+# explore the meta-analytic dataset 
+# the easies way is to use a funnel plot to identify potential outlier (which are sometimes caused by data extraction errors, or typos in the data source) # a funnel plot use the inverse of the standard error (i.e. precision) as y-axis and effect size as x-axis.
+funnel(dat_all$eff.size, sqrt(dat_all$var.eff.size), yaxis="seinv",
+       #xlim = c(-3, 3),
+       ylab = "Precision (1/SE)",
+       xlab = "Effect size") 
+
+# the funnel plot clearly showed that there were unusual effect sizes (e.g., extremely large or small values)
+# when effect sizes are larger than 300  and smaller -300, we assume they are unreliable. So remove these extreme values
+dat_all <- dat_all %>% filter(eff.size < 30, eff.size > -30)
+# we also remove the extremely large sampling variances
+# dat_all <- dat_all %>% filter(var.eff.size < 100)
+# check the funnel plots again. This time, the funnel plot looks more normal
+funnel(dat_all$eff.size, sqrt(dat_all$var.eff.size), yaxis="seinv",
+       #xlim = c(-3, 3),
+       ylab = "Precision (1/SE)",
+       xlab = "Effect size") 
+
+# check how many effect size measures in this dataset
+count(dat_all, eff.size.measure) # 11 measures
+
+# define effect size categories
+# this dataset has 11 types of effect size measures, based on which we grouped into 4 broad categories: 
+# (1) standadised mean differences (SMD), including cohens.d,  hedges.d, hedges.g, abs.hedges.d, SMD;
+# (2) log respond ratio (lnRR);
+# (3) correlation (Zr/r);
+# (4) uncommon effect sizes, including mean difference, regression slope, log odds ratio, relative incident rate ratio (IRR)
+# adding column to group specific effect size measures into four categories
+grouped_es <- NA
+   
+# (1) SMD: cohens.d,  hedges.d, hedges.g, abs.hedges.d, SMD
+grouped_es[dat_all$eff.size.measure == "cohens.d"|
+           dat_all$eff.size.measure == "hedges.d"|
+           dat_all$eff.size.measure == "hedges.g"|
+           dat_all$eff.size.measure == "abs.hedges.d"|
+           dat_all$eff.size.measure == "SMD"] <- c("SMD") 
+   
+# (2) lnRR: log.ratio
+grouped_es[dat_all$eff.size.measure == "log.ratio"] <- c("lnRR") 
+   
+# (3) Zr: z.r
+grouped_es[dat_all$eff.size.measure == "z.r"] <- c("Zr") 
+
+# (4) uncommon: IRR, log.odds.ratio, mean.diff, reg.slope
+grouped_es[dat_all$eff.size.measure == "IRR" | 
+           dat_all$eff.size.measure == "log.odds.ratio" |
+           dat_all$eff.size.measure == "mean.diff" |
+           dat_all$eff.size.measure == "reg.slope"] <- c("uncommon") 
+
+# add grouped_es
+dat_all$grouped_es <- as.factor(grouped_es)
+
+# compute the standard deviation for different effect size measures
+dat_all %>%
+  group_by(grouped_es) %>%
+  summarise(SD = sd(eff.size)) # or aggregate(dat_all$eff.size, list(dat_all$grouped_es), FUN=sd)
+
+# because we need to test decline effect for each meta-analysis case, so we need to split the dataset into separate dataset according to the identity of meta-analysis
+ma.id <- dat_all$meta.analysis.id %>% unique()
+dat_list <- NA
+for (i in 1:length(ma.id)) {
+  dat_list[i] <- dat_all[dat_all$meta.analysis.id == i, ] %>% list() # compile them into a list, so that we can use sapply() to fit meta-analytic model for each meta-analytic case
+}
+
+
+
+# index the elements of the data list according to the order of meta-analysis cases. By doing this, we can find any meta-analytic case by retrieving its index
+names(dat_list) <- paste("MA", ma.id, sep = "_")
+
+# create the variable of sampling error
+for (i in 1:length(dat_list)) {
+  dat_list[[i]]$se.eff.size <- sqrt(dat_list[[i]]$var.eff.size)
+}
+
+# create the variable of publication year, which was used as a predictor to test time-lag bias (decline effect). we centered publication year. The reason  is to set the intercept conditional on the mean year 
+for (i in 1:length(dat_list)) {
+  dat_list[[i]]$study.year.c <- scale(dat_list[[i]]$study.year, scale = F, center = T)
+}
+
+# create the variable of latest-year-centring publication year, which was used as a predictor to test time-lag bias (decline effect). The reason why creating this variable is to set the intercept conditional on the latest year rather than zero year (details see the main text)
+for (i in 1:length(dat_list)) {
+  dat_list[[i]]$study.year.l <- as.vector(dat_list[[i]]$study.year - max(dat_list[[i]]$study.year))
+}
+
+
+## transform effect size, sei, and year_pub.l prior to model fitting. This  is to eliminate scale-dependency and to allow for aggregations of model coefficients over different effect size metrics in subsequent second-order meta-analysis
+
+## scale data using respective standard deviation
+for (i in 1:length(dat_list)) {
+  dat_list[[i]]$eff.size_zscore <- scale(dat_list[[i]]$eff.size, center = F, scale = TRUE) # without centering, which is used to estimate intercept
+  dat_list[[i]]$var.eff.size_zscore <- scale(dat_list[[i]]$var.eff.size, scale = TRUE) - ( (0-mean(dat_list[[i]]$var.eff.size))/sd(dat_list[[i]]$var.eff.size) ) # see Equation 7 for explanations
+  dat_list[[i]]$se.eff.size_zscore <- scale(dat_list[[i]]$se.eff.size, scale = TRUE) - ( (0-mean(dat_list[[i]]$se.eff.size))/sd(dat_list[[i]]$se.eff.size) ) # see Equation 7 for explanations
+  dat_list[[i]]$study.year.c_zscore <- scale(dat_list[[i]]$study.year, scale = TRUE, center = TRUE)
+}
+
+
+# also scale the dataset of 'dat_all' - for comparison
+
+# first remove NAs, zero variance, and +-Inf
+dat_all <- dat_all[!is.na(dat_all$eff.size) & !is.na(dat_all$var.eff.size) & dat_all$var.eff.size != 0 & !is.na(dat_all$study.year), ]
+
+dat_all$eff.size_zscore <- scale(dat_all$eff.size, center = F, scale = TRUE) # without centering, which is used to estimate intercept
+# center year first
+dat_all$study.year.c <- scale(dat_all$study.year, scale = F, center = T)
+# then scale the centered year
+dat_all$study.year.c_zscore <- scale(dat_all$study.year.c, scale = TRUE)
+
+```
+
+
+
+# Multilevel meta-analytic approaches
+
+we will use multilevel meta-analytic model to fit two types data:
+- centered year (by mean and latest year, respectively)
+- scaled year
+- original year
+
+For each type of data, we test for decline effects (sign & significance of model slopes). For the original data, we also estimate the meta-analytic overall mean, model intercept (beta0)
+
+First to obtain overall mean (beta0) for each meta-analysis case
+
+```{r}
+# some datasets can not achieve convergence although we used different numerical optimizer, adjusted different step length. So we delete this dataset before model fitting
+dat_list <- dat_list[names(dat_list) != "MA_35" &
+                     names(dat_list) != "MA_67" &
+                     names(dat_list) != "MA_185" &
+                     names(dat_list) != "MA_313" &
+                     names(dat_list) != "MA_324" &
+                     names(dat_list) != "MA_358" &
+                     names(dat_list) != "MA_359" &
+                     names(dat_list) != "MA_406" &
+                     names(dat_list) != "MA_433"]
+
+
+# fit intercept-only model for each meta-analytic case
+model_all <- NA
+for (i in 1:length(dat_list)) {
+  model_all[i] <- rma.mv(yi = eff.size_zscore, V = var.eff.size, random = list(~1|study/id.effect.within.study), method = "REML", test = "t", data = dat_list[[i]], sparse = TRUE, control=list(optimizer = "optim")) %>% list()
+}
+
+
+```
+
+# Centering - by mean year
+
+## Identify decline effect for each meta-analysis case
+
+Within-meta-analysis modelling
+
+```{r}
+
+# detect decline effect for each meta-analytic case - centered year
+model_all_year <- NA
+for (i in 1:length(dat_list)) {
+  model_all_year[i] <- rma.mv(yi = eff.size_zscore, V = var.eff.size, random = list(~1|study/id.effect.within.study), method = "REML", test = "t", mods = ~ study.year.c, data = dat_list[[i]], sparse = TRUE, control=list(optimizer = "optim")) %>% list()
+}
+
+
+#*************************************************************************#
+#                          Fit time-lag bias models 
+#*************************************************************************#
+
+## check the significance and direction of model regressions from each meta-analysis to identify whether it presents a decline effect
+
+
+### extract model model coefficients and their significance test results
+model_est_centered <- data.frame(case = names(dat_list),
+                             beta0 = sapply(model_all, function(x) x$beta), # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = sapply(model_all, function(x) x$se), # standard error of beta0
+                             pval_beta0 = sapply(model_all, function(x) x$pval), # p value of beta0
+                             beta0_c = sapply(model_all_year, function(x) x$beta[1]), # beta0_c in equation 2 -  bias corrected overall mean
+                             se_beta0_c = sapply(model_all_year, function(x) x$se[1]), # standard error of beta0_c
+                             pval_beta0_c = sapply(model_all_year, function(x) x$pval[1]), # p valuer of beta0_c
+                             beta2 = sapply(model_all_year, function(x) x$beta[2]), # beta2 in Equation 2 - slope of year 
+                             se_beta2 = sapply(model_all_year, function(x) x$se[2]), # standard error of beta2
+                             pval_beta2 = sapply(model_all_year, function(x) x$pval[2]) # p value of beta2
+                            )
+
+
+#*************************************************************************#
+#             Identify the presence of decline effect 
+#*************************************************************************#
+
+## we next aim to identify the presence of the decline effect for each meta-analysis. We also figure out the wrong directions of slope, which will be used to inform the parameterization of reduced models
+
+## our rational is: for an effect that is expected to be positive, a decline effect would be expressed in a negative value of beta2. In such a case, a slope  with opposing direction (unexpected sign) indicates no detectable decline effect and subsequently does not require correction for such a bias
+
+## we use the product of beta0 (overall mean/intercept obtained from intercept-only model) and beta2 (we deliberately use beta2 although we only have one slope) as the signal, that is, if beta0*beta2 is negative, the examined meta-analysis has a decline effect (beta 2 is in a correct direction)
+
+## so we first to create two new columns to contain the product:  beta0*beta1 and beta0*beta2
+
+model_est_centered[11] <- data.frame(beta0Tbeta2 = model_est_centered$beta0 * model_est_centered$beta2) # model_est_lnRR has 10 column (ncol(model_est)), so we add column 11
+
+## visual check
+model_est_centered
+
+## identify the decline effect - beta2 with correct sign 
+de_centered <- model_est_centered %>% subset(model_est_centered$beta0Tbeta2 < 0)
+de_centered$case
+nrow(de_centered)/length(dat_list)
+## identify significant decline effect - significant beta2 with correct sign 
+de_centered_sig <- model_est_centered %>% subset(model_est_centered$pval_beta2 < 0.05 & model_est_centered$beta0Tbeta2 < 0)
+## check which meta-analyses have decline effects
+de_centered_sig$case
+nrow(de_centered_sig)/length(dat_list)
+
+
+## situation 4
+model_est_centered %>% subset(model_est_centered$beta0 < 0.05 & model_est_centered$beta2 < 0)
+
+#************************************************************************#
+#                       Estimate bias-corrected overall effect
+#************************************************************************#
+
+## if the model slope (beta2) has a wrong direction, we need to take out it when fitting model to estimate the bias-corrected mean (reduced model)
+## if the model slope (beta2) has a correct direction, we do not need to take out it when fitting model to estimate the bias-corrected mean (full-model)
+
+
+
+#*****************************scenario 1****************************#
+## in scenario 1, beta2 has a correct direction, we do not  need to take out year variable from the fixed-effect term in the multilevel model
+beta2c <- model_est_centered %>% subset(model_est_centered$beta0Tbeta2 < 0) 
+
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s1_file <- beta2c$case 
+
+## extract model coefficients and their significance test results scenario 1
+model_est_centered_s1 <- data.frame(case = s1_file,
+                             beta0 = model_est_centered[model_est_centered$case %in% s1_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_centered[model_est_centered$case %in% s1_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_centered[model_est_centered$case %in% s1_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_centered[model_est_centered$case %in% s1_file, ]$beta0_c, # beta0_c -  bias corrected overall mean; we can retrieve the estimates of this parameter directly from the early fitted full model (model_est_centered)
+                             se_beta0_c = model_est_centered[model_est_centered$case %in% s1_file, ]$se_beta0_c, # standard error of beta0_c
+                             pval_beta0_c = model_est_centered[model_est_centered$case %in% s1_file, ]$pval_beta0_c, # p valuer of beta0_c
+                              beta2 = model_est_centered[model_est_centered$case %in% s1_file, ]$beta2, # beta2 in Equation 5 - slope of year;  alternatively, we can retrieve the estimates of this parameter directly from the early fitted full model
+                             se_beta2 = model_est_centered[model_est_centered$case %in% s1_file, ]$se_beta2, # standard error of beta2
+                             pval_beta2 = model_est_centered[model_est_centered$case %in% s1_file, ]$pval_beta2 # p value of beta2
+                            )
+
+
+#*****************************scenario 2****************************#
+## in scenario 2, beta2 has a wrong direction, we need to take out year variable from the fixed-effect term in the multilevel model
+beta2w <- model_est_centered %>% subset(model_est_centered$beta0Tbeta2 > 0) 
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s2_file <- beta2w$case 
+## model fitting -  take out beta2-related predictor (year_pub.l_zscore)
+## this reduced model is equivalent to the null model (intercept-only model - model1-466) we fitted early, because full model only has one predictor (year_pub.l_zscore)
+## alternatively we can directly retrieve model estimates from the early fitted model 
+## extract model coefficients and their significance test results scenario 2
+model_est_centered_s2 <- data.frame(case = s2_file,
+                             beta0 = model_est_centered[model_est_centered$case %in% s2_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_centered[model_est_centered$case %in% s2_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_centered[model_est_centered$case %in% s2_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_centered[model_est_centered$case %in% s2_file, ]$beta0, # beta0_c -  bias corrected overall mean: in this case, it equals to uncorrected overall mean (i.e., beta0) because the fixed effect term (predictor:study.year.c_zscore) is dropped off. in this regard, we can directly retrieve model estimates from the early fitted null model:  model_est_centered[model_est_centered$case %in% s2_file, ]$beta0
+                             se_beta0_c = model_est_centered[model_est_centered$case %in% s2_file, ]$se_beta0, # standard error of beta0_c
+                             pval_beta0_c = model_est_centered[model_est_centered$case %in% s2_file, ]$pval_beta0, # p valuer of beta0_c
+                              beta2 = 0, # beta2-related term (year_pub.l_zscore) is removed from the model; we temporarily use 0, but will remove them prior to meta-meta-analysis
+                             se_beta2 = 0, # standard error of beta2
+                             pval_beta2 = 0 # p value of beta2
+                             )
+
+```
+
+
+## Between-meta-analysis modelling: reduced model
+
+Full model without consideration of the correctness of the directionality of model slope (beta2) from the first-order meta-analyses.
+
+Use a meta-analytic model to statistically aggregate the model slope regardless of the directionality.
+
+```{r}
+# aggregation of slopes (beta2) for the full model (without consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip <- (model_est_centered %>% subset(model_est_centered$beta0 < 0))$case
+## first use beta2 as flipped beta2
+model_est_centered$beta2_flip <- model_est_centered$beta2
+## then replace those with wrong directions
+model_est_centered[model_est_centered$case %in% beta2_flip, ]$beta2_flip <- model_est_centered[model_est_centered$case %in% beta2_flip, ]$beta2*(-1)
+
+# rma model
+MMA_beta2_centered <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_centered, control=list(stepadj = 0.5, maxiter = 10000))
+
+# rma.mv model
+MMA_beta2_centered <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | case), method = "REML", data = model_est_centered, control=list(stepadj = 0.5, maxiter = 10000))
+
+# multiple model and robust variance estimation
+# extract cluster/grouping variables
+cluster_variables <- data.frame(paper.id = sapply(dat_list, function(x) x$paper.id) %>% unlist(),
+           meta.analysis.paper = sapply(dat_list, function(x) x$meta.analysis.paper) %>% unlist(),
+           meta.analysis.year = sapply(dat_list, function(x) x$meta.analysis.year) %>% unlist(),
+           meta.analysis.id = sapply(dat_list, function(x) x$meta.analysis.id) %>% unlist(),
+           grouped_es = sapply(dat_list, function(x) x$grouped_es) %>% unlist())
+
+# remove those with convergence issues (mentioned early)
+cluster_variables <- subset(cluster_variables, !(meta.analysis.id %in% c(35,67,185,313,324,358,359,406,433)))
+
+# select unique/distinct meta.analysis.id from this grouping variables
+cluster_variables_unique <- cluster_variables %>% distinct(meta.analysis.id, .keep_all = TRUE)
+
+# categorize the publication year of each meta-analysis using 2002 as a cutoff
+
+cluster_variables_unique$windows <- ifelse(cluster_variables_unique$meta.analysis.year < 2002, "before", "after")
+
+# fit a multilevel model
+# first add grouping variables to the dataframe
+model_est_centered2 <- model_est_centered
+model_est_centered2[16:19] <- data.frame(meta.analysis.paper = cluster_variables_unique$meta.analysis.paper,
+                                         meta.analysis.year = cluster_variables_unique$meta.analysis.year,
+                                         windows = cluster_variables_unique$windows,
+                                         grouped_es = cluster_variables_unique$grouped_es) # add grouping variables to dataset used to fit a multilevel model
+
+# fit a multilevel model
+MMA_beta2_centered <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), method = "REML", test = "t", data = model_est_centered2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# overall beta2 estimates in different effect size measures
+# reorder
+model_est_centered2$grouped_es <- factor(model_est_centered2$grouped_es, levels = c("uncommon", "Zr", "lnRR", "SMD"))
+MMA_beta2_centered_grouped_es <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(grouped_es) -1, method = "REML", test = "t", data = model_est_centered2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# dichotomize year - categorization of year
+MMA_beta2_centered_windows <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(windows) -1, method = "REML", test = "t", data = model_est_centered2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# use continuous year
+MMA_beta2_centered_year <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ meta.analysis.year, method = "REML", test = "t", data = model_est_centered2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+
+# use robust error to test significance of model coefficient
+MMA_beta2_centered_REV <- robust(MMA_beta2_centered, cluster = model_est_centered2$meta.analysis.paper) 
+# alternatively
+MMA_beta2_centered_REV2 <-coef_test(MMA_beta2_centered, vcov = "CR2", cluster = model_est_centered2$meta.analysis.paper)
+
+# exclude two extremely large beta2
+# model_est_centered2 <- model_est_centered %>% filter(beta2_flip > -1 & beta2_flip < 1)
+# MMA_beta2_centered <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_centered2)
+
+
+# orchard plot for overall beta2
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_results <- mod_results(MMA_beta2_centered, mod = "1", group = "meta.analysis.paper", data = model_est_centered2)
+
+
+png(filename = "./orchard_MMA_beta2_centered.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_results,              
+             mod = "1", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  scale_x_discrete(labels = c("Systematic pattern of decline effect in ecology")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+# orchard plot for each effect size's beta2
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_grouped_es_results <- mod_results(MMA_beta2_centered_grouped_es, mod = "grouped_es", group = "meta.analysis.paper", data = model_est_centered2)
+
+png(filename = "./beta2_centered_grouped_es.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_grouped_es_results,              
+             mod = "grouped_es", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  scale_x_discrete(labels = c("uncommon", "Zr", "lnRR", "SMD")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+
+# orchard plot for each window's beta2
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_windows_results <- mod_results(MMA_beta2_centered_windows, mod = "windows", group = "meta.analysis.paper", data = model_est_centered2)
+
+png(filename = "./orchard_MMA_beta2_centered_windows.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_windows_results,              
+             mod = "windows", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  # scale_x_discrete(labels = c("Systematic pattern of decline effect in ecology")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+# orchard plot for each window's beta2
+png(filename = "./orchard_MMA_beta2_centered_year.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+bubble_plot(MMA_beta2_centered_year, mod = "meta.analysis.year", 
+            xlab = "Publication year", ylab = "Standardised regression slope of year",
+            group = "meta.analysis.paper",
+            data = model_est_centered2, legend.pos = "none") +
+            ylim(-0.4, 0.4) +
+            theme(axis.text.x = element_text(size = 10, colour = "black"),
+            axis.text.y = element_text(size = 10, colour = "black"),
+            axis.title.x = element_text(size = 10, colour = "black"),
+            plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+# differences in beta0
+model_est_centered$D <- abs(model_est_centered$beta0 - model_est_centered$beta0_c)
+# differences in beta0' variance
+model_est_centered$D_var <- model_est_centered$se_beta0^2 + model_est_centered$se_beta0_c^2 + 2*model_est_centered$se_beta0*model_est_centered$se_beta0_c
+# differences in beta0' SE
+model_est_centered$D_sei <- sqrt(model_est_centered$D_var)
+
+# get folded mean and variance
+model_est_centered$D_folded <- folded_es(mean = model_est_centered$D, variance = model_est_centered$D_var)
+model_est_centered$D_var_folded <- folded_error(mean = model_est_centered$D, variance = model_est_centered$D_var)
+model_est_centered$D_sei_folded <- sqrt(model_est_centered$D_var_folded)
+
+# overall decline in effect size magnitude
+MMA_D_centered <- rma(yi = D_folded, sei = D_sei_folded, method = "REML", data = model_est_centered, control=list(stepadj = 0.5, maxiter = 10000)) # By default, Fisher scoring algorithm did not converge. To deal with this convergence issue, we adjusted the step length of the Fisher scoring algorithm to a desired factor with control=list(stepadj=value) (values below 1 will reduce the step length). Manually change the maximum number of iterations with maxiter = value.
+```
+
+
+## Between-meta-analysis modelling: reduced model
+
+Reduced model with consideration of the correctness of the directionality of model slope (beta2) from the first-order meta-analyses.
+
+Use a meta-analytic model to statistically aggregate the model slope with expected directionality.
+
+```{r}
+# combine model estimates of two scenarios into one dataframe
+model_est_centered_corrected <- rbind(model_est_centered_s1, model_est_centered_s2)
+
+
+# aggregation of slopes (beta2) for the reduced model (with consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip_corrected <- (model_est_centered_corrected %>% subset(model_est_centered_corrected$beta0 < 0))$case
+
+# beta0 > 0, beta2 > 0 # check why no positive beta2
+model_est_centered_corrected %>% subset(model_est_centered_corrected$beta0 > 0 & model_est_centered_corrected$beta2 > 0) # no case # model_est_corrected %>% filter(beta0 > 0, beta2 > 0)
+
+# beta0 < 0, beta2 < 0 # check why no positive beta2
+model_est_centered_corrected %>% subset(model_est_centered_corrected$beta0 < 0 & model_est_centered_corrected$beta2 < 0) # no case # model_est_corrected %>% filter(beta0 < 0, beta2 < 0)
+
+
+## first use beta2 as flipped beta2
+model_est_centered_corrected$beta2_flip <- model_est_centered_corrected$beta2
+## then replace those with wrong directions
+model_est_centered_corrected[model_est_centered_corrected$case %in% beta2_flip_corrected, ]$beta2_flip <- model_est_centered_corrected[model_est_centered_corrected$case %in% beta2_flip_corrected, ]$beta2*(-1)
+
+# fit a random effect model
+MMA_beta2_centered_corrected <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_centered_corrected[model_est_centered_corrected$beta2 != 0, ], control=list(stepadj = 0.5, maxiter = 10000)) # only fit non-zero beta2
+
+# only keep non-zero beta2, because zero beta2 has a wrong direction (when extracting beta2 from fitted models, we specify a value of zero to a wrong direction of beta2) 
+model_est_centered_corrected2 <- model_est_centered_corrected[model_est_centered_corrected$beta2 != 0, ]
+
+# fit a multilevel model
+# first to extract grouping variables
+location <- model_est_centered_corrected2$case %in% model_est_centered2$case %>% which()
+
+# second to add grouping variables to the dataframe
+model_est_centered_corrected2[18:21] <- data.frame(meta.analysis.paper = model_est_centered2$meta.analysis.paper[location],
+                                                   meta.analysis.year = model_est_centered2$meta.analysis.year[location],
+                                                   windows = model_est_centered2$windows[location],
+                                                   grouped_es = model_est_centered2$grouped_es[location]) # add grouping variables to dataset used to fit a multilevel model
+
+
+# model fitting
+MMA_beta2_centered_corrected <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered_corrected_grouped_es <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(grouped_es) -1, method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered_corrected_windows <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(windows) -1, method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered_corrected_year <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~meta.analysis.year, method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# use robust error to test significance of model coefficient
+MMA_beta2_centered_corrected_REV <- robust(MMA_beta2_centered_corrected, cluster = model_est_centered_corrected2$meta.analysis.paper) 
+# alternatively  
+coef_test(MMA_beta2_centered_corrected, vcov = "CR2", cluster = model_est_centered_corrected2$meta.analysis.paper)
+
+
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_corrected_results <- mod_results(MMA_beta2_centered_corrected, mod = "1", group = "meta.analysis.paper", data = model_est_centered_corrected2)
+
+
+png(filename = "./orchard_MMA_beta2_centered_corrected.png", width = 8, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_corrected_results,              
+             mod = "1", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope (ES ~ year)",
+             transfm = "none", 
+             angle = 90) + 
+  scale_y_continuous(limits = c(-0.1, 0.0), breaks = seq(-0.1, 0.0, 0.05)) +
+  # ylim(-0.1, 0.0) + 
+  scale_x_discrete(labels = c("Decline effect pattern of ecological effect sizes")) + 
+  labs(title = "Decline effect pattern of 254 meta-analyses used to test 134 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off() 
+
+
+# differences in beta0
+model_est_centered_corrected$D <- abs(model_est_centered_corrected$beta0 - model_est_centered_corrected$beta0_c)
+# differences in beta0' variance
+model_est_centered_corrected$D_var <- model_est_centered_corrected$se_beta0^2 + model_est_centered_corrected$se_beta0_c^2 + 2*model_est_centered_corrected$se_beta0*model_est_centered_corrected$se_beta0_c
+# differences in beta0' SE
+model_est_centered_corrected$D_sei <- sqrt(model_est_centered_corrected$D_var)
+
+# get folded mean and variance
+model_est_centered_corrected$D_folded <- folded_es(mean = model_est_centered_corrected$D, variance = model_est_centered_corrected$D_var)
+model_est_centered_corrected$D_var_folded <- folded_error(mean = model_est_centered_corrected$D, variance = model_est_centered_corrected$D_var)
+model_est_centered_corrected$D_sei_folded <- sqrt(model_est_centered_corrected$D_var_folded)
+
+# overall decline in effect size magnitude
+MMA_D_centered_corrected <- rma(yi = D_folded, sei = D_sei_folded, method = "REML", data = model_est_centered_corrected, control=list(stepadj = 0.5, maxiter = 10000)) # By default, Fisher scoring algorithm did not converge. To deal with this convergence issue, we adjusted the step length of the Fisher scoring algorithm to a desired factor with control=list(stepadj=value) (values below 1 will reduce the step length). Manually change the maximum number of iterations with maxiter = value.
+
+## interpretation of D - back-transform to the original scale
+## sd for each effect size measure
+sd_grouped_es <- aggregate(eff.size ~ grouped_es, dat_all, sd)
+
+sd_grouped_es %>%
+  group_by(grouped_es) %>%
+  mutate(back_trans = eff.size*MMA_D_centered_corrected$b[1])
+
+
+png(filename = "./orchard_MMA_D_centered_corrected.png", width = 6, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_D_centered_corrected, mod = "Int", xlab = "Standardised coefficents", k = TRUE, transfm = "none", angle = 0) + 
+  #xlim(-1.5, 8) + 
+  scale_y_discrete(labels = c("Statistic D")) + 
+  labs(title = " ", y = "") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"))
+dev.off() 
+
+```
+
+## Meta science
+
+Calculate the statistical power of the test of decline effect for each meta-analysis and meta-meta-analysis
+
+```{r}
+# retrieve the number of effect sizes (k) and primary studies (N) for each meta-analysis case
+## the number of effect size within meta-analysis case
+k <- NA
+for (i in 1:length(dat_list)) {
+  k[i] <- length(dat_list[[i]]$id.effect.within.study)
+}
+k %>% summary()
+model_est_centered$k <- k
+
+## the number of primary studies within meta-analysis case
+N <- NA
+for (i in 1:length(dat_list)) {
+  N[i] <- length(unique(dat_list[[i]]$study))
+}
+N %>% summary()
+model_est_centered$N <- N
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of each meta-analysis
+#--------------------------------------------------------------------------#
+
+model_est_centered$de.power <- power.ma_Shinichi(mu = model_est_centered$beta2,SE = model_est_centered$se_beta2)
+
+which(model_est_centered$de.power > 0.8) %>% length() # 15
+length(model_est_centered$de.power) # 457
+
+MMA_de.power_centered <- lm(log(de.power) ~ 1, weights = k, data = model_est_centered)
+# this is median
+MMA_de.power_centered$coefficients %>% exp() 
+# this is mean
+(MMA_de.power_centered$coefficients + 0.5*var(log(model_est_centered$de.power))) %>% exp() 
+# confidence interval of median
+confint(MMA_de.power_centered) %>% exp()
+
+png(filename = "./power_distribution.png", width = 6, height = 5, units = "in", res = 400, type = "windows")
+hist(model_est_centered$de.power, xlab = "Power", main = "Power of decline effect test for individual meta-analyses")
+dev.off()
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of meta-meta-analysis
+#--------------------------------------------------------------------------#
+
+power.ma_Shinichi(mu = MMA_beta2_centered$beta[1], SE = MMA_beta2_centered$se[1]) # 0.9227553
+
+power.ma_Shinichi(mu = MMA_beta2_centered_corrected$beta[1], SE = MMA_beta2_centered_corrected$se[1]) 
+
+
+
+# use package qqman to make a Manhattan figure show power for each individual decline effect test
+Manhattan_dat <- model_est_centered
+Manhattan_dat$BP <- 1:nrow(Manhattan_dat)
+Manhattan_dat$grouped_es <- model_est_centered2$grouped_es %>% factor(levels = c("SMD", "lnRR", "Zr", "uncommon"))
+Manhattan_dat$CHR <- Manhattan_dat$grouped_es %>% as.numeric()
+
+png(filename = "./Manhattan_plot.jpg", width = 6, height = 4, units = "in", res = 400, type = "windows")
+manhattan(Manhattan_dat, chr="CHR", bp="BP", snp="case", p="de.power", logp=FALSE,
+                 col = c("#88CCEE", "#332288", "#DDCC77", "#117733"),
+                 xlab = " ",
+                 ylab = "Statistical power of decline effect test",
+                 cex = 0.9,
+                 cex.axis = 0.9
+                 ) # reduce the point size to 60% (cex=), and reduce the font size of the axis labels to 90% (cex.axis=).
+abline(h=0.8, lwd=2, lty=2, col="grey") # add nominal power
+abline(h=0.92, lwd=2, lty=2, col="red") # add meta-meta-level power
+#  https://cran.r-project.org/web/packages/qqman/vignettes/qqman.html - The chromosome column must be numeric. If you have “X,” “Y,” or “MT” chromosomes, you'll need to rename these 23, 24, 25, etc. You can modify the source code (e.g., fix(manhattan)) to change the line designating the axis tick labels (labs <- unique(d$CHR)) to set this to whatever you'd like it to be - c("SMD", "lnRR", "Zr", "uncommon").
+dev.off()
+
+
+# pdf version
+pdf(file = "./Figure2A.pdf", width = 6, height = 4)
+manhattan(Manhattan_dat, chr="CHR", bp="BP", snp="case", p="de.power", logp=FALSE,
+                 col = c("#88CCEE", "#332288", "#DDCC77", "#117733"),
+                 xlab = " ",
+                 ylab = "Statistical power of decline effect test",
+                 cex = 0.9,
+                 cex.axis = 0.9
+                 ) # reduce the point size to 60% (cex=), and reduce the font size of the axis labels to 90% (cex.axis=).
+abline(h=0.8, lwd=2, lty=2, col="grey") # add nominal power
+abline(h=0.92, lwd=2, lty=2, col="red") # add meta-meta-level power
+dev.off()
+
+
+
+
+
+
+
+
+
+library(poolr)
+poolr::fisher(model_est$pval_beta2)
+
+c(fisher = fisher(model_est$pval_beta2)$p,
+liji = fisher(model_est$pval_beta2, adjust = "liji", R = NA)$p,
+emp = fisher(model_est$pval_beta2, adjust = "emp", R = LD)$p,
+brown = fisher(model_est$pval_beta2, adjust = "gen", R = mvnconv(LD))$p)
+
+
+```
+
+
+
+# Centering - by latest year
+
+## Identify decline effect for each meta-analysis case
+Within-meta-analysis modelling
+
+```{r}
+
+# detect decline effect for each meta-analytic case - centered year
+model_all_year.l <- NA
+for (i in 1:length(dat_list)) {
+  model_all_year.l[i] <- rma.mv(yi = eff.size_zscore, V = var.eff.size, random = list(~1|study/id.effect.within.study), method = "REML", test = "t", mods = ~ study.year.l, data = dat_list[[i]], sparse = TRUE, control=list(optimizer = "optim")) %>% list()
+}
+
+
+
+#*************************************************************************#
+#                          Fit time-lag bias models 
+#*************************************************************************#
+
+## check the significance and direction of model regressions from each meta-analysis to identify whether it presents a decline effect
+
+
+### extract model model coefficients and their significance test results
+model_est_centered.l <- data.frame(case = names(dat_list),
+                             beta0 = sapply(model_all, function(x) x$beta), # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = sapply(model_all, function(x) x$se), # standard error of beta0
+                             pval_beta0 = sapply(model_all, function(x) x$pval), # p value of beta0
+                             beta0_c = sapply(model_all_year.l, function(x) x$beta[1]), # beta0_c in equation 2 -  bias corrected overall mean
+                             se_beta0_c = sapply(model_all_year.l, function(x) x$se[1]), # standard error of beta0_c
+                             pval_beta0_c = sapply(model_all_year.l, function(x) x$pval[1]), # p valuer of beta0_c
+                             beta2 = sapply(model_all_year.l, function(x) x$beta[2]), # beta2 in Equation 2 - slope of year 
+                             se_beta2 = sapply(model_all_year.l, function(x) x$se[2]), # standard error of beta2
+                             pval_beta2 = sapply(model_all_year.l, function(x) x$pval[2]) # p value of beta2
+                            )
+
+
+#*************************************************************************#
+#             Identify the presence of decline effect 
+#*************************************************************************#
+
+## we next aim to identify the presence of the decline effect for each meta-analysis. We also figure out the wrong directions of slope, which will be used to inform the parameterization of reduced models
+
+## our rational is: for an effect that is expected to be positive, a decline effect would be expressed in a negative value of beta2. In such a case, a slope  with opposing direction (unexpected sign) indicates no detectable decline effect and subsequently does not require correction for such a bias
+
+## we use the product of beta0 (overall mean/intercept obtained from intercept-only model) and beta2 (we deliberately use beta2 although we only have one slope) as the signal, that is, if beta0*beta2 is negative, the examined meta-analysis has a decline effect (beta 2 is in a correct direction)
+
+## so we first to create two new columns to contain the product:  beta0*beta1 and beta0*beta2
+
+model_est_centered.l[11] <- data.frame(beta0Tbeta2 = model_est_centered$beta0 * model_est_centered$beta2) # model_est_lnRR has 10 column (ncol(model_est)), so we add column 11
+
+## visual check
+model_est_centered.l
+
+## identify the decline effect - beta2 with correct sign 
+de_centered.l <- model_est_centered.l %>% subset(beta0Tbeta2 < 0)
+de_centered.l$case
+nrow(de_centered.l)/length(dat_list)
+## identify significant decline effect - significant beta2 with correct sign 
+de_centered.l_sig <- model_est_centered.l %>% filter(pval_beta2 < 0.05, beta0Tbeta2 < 0)
+## check which meta-analyses have decline effects
+de_centered.l_sig$case
+nrow(de_centered.l_sig)/length(dat_list)
+
+## situation 4
+model_est_centered.l %>% filter(beta0 < 0.05, beta2 < 0)
+
+#************************************************************************#
+#                       Estimate bias-corrected overall effect
+#************************************************************************#
+
+## if the model slope (beta2) has a wrong direction, we need to take out it when fitting model to estimate the bias-corrected mean (reduced model)
+## if the model slope (beta2) has a correct direction, we do not need to take out it when fitting model to estimate the bias-corrected mean (full-model)
+
+
+
+#*****************************scenario 1****************************#
+## in scenario 1, beta2 has a correct direction, we do not  need to take out year variable from the fixed-effect term in the multilevel model
+beta2c <- model_est_centered.l %>% filter(beta0Tbeta2 < 0) 
+
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s1_file <- beta2c$case 
+
+## extract model coefficients and their significance test results scenario 1
+model_est_centered.l_s1 <- data.frame(case = s1_file,
+                             beta0 = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$beta0_c, # beta0_c -  bias corrected overall mean; we can retrieve the estimates of this parameter directly from the early fitted full model (model_est_centered)
+                             se_beta0_c = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$se_beta0_c, # standard error of beta0_c
+                             pval_beta0_c = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$pval_beta0_c, # p valuer of beta0_c
+                              beta2 = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$beta2, # beta2 in Equation 5 - slope of year;  alternatively, we can retrieve the estimates of this parameter directly from the early fitted full model
+                             se_beta2 = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$se_beta2, # standard error of beta2
+                             pval_beta2 = model_est_centered.l[model_est_centered.l$case %in% s1_file, ]$pval_beta2 # p value of beta2
+                            )
+
+
+#*****************************scenario 2****************************#
+## in scenario 2, beta2 has a wrong direction, we need to take out year variable from the fixed-effect term in the multilevel model
+beta2w <- model_est_centered.l %>% filter(beta0Tbeta2 > 0) 
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s2_file <- beta2w$case 
+## model fitting -  take out beta2-related predictor (year_pub.l_zscore)
+## this reduced model is equivalent to the null model (intercept-only model - model1-466) we fitted early, because full model only has one predictor (year_pub.l_zscore)
+## alternatively we can directly retrieve model estimates from the early fitted model 
+## extract model coefficients and their significance test results scenario 2
+model_est_centered.l_s2 <- data.frame(case = s2_file,
+                             beta0 = model_est_centered.l[model_est_centered.l$case %in% s2_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_centered.l[model_est_centered.l$case %in% s2_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_centered.l[model_est_centered.l$case %in% s2_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_centered.l[model_est_centered.l$case %in% s2_file, ]$beta0, # beta0_c -  bias corrected overall mean: in this case, it equals to uncorrected overall mean (i.e., beta0) because the fixed effect term (predictor:study.year.c_zscore) is dropped off. in this regard, we can directly retrieve model estimates from the early fitted null model:  model_est_centered[model_est_centered$case %in% s2_file, ]$beta0
+                             se_beta0_c = model_est_centered.l[model_est_centered.l$case %in% s2_file, ]$se_beta0, # standard error of beta0_c
+                             pval_beta0_c = model_est_centered.l[model_est_centered.l$case %in% s2_file, ]$pval_beta0, # p valuer of beta0_c
+                              beta2 = 0, # beta2-related term (year_pub.l_zscore) is removed from the model; we temporarily use 0, but will remove them prior to meta-meta-analysis
+                             se_beta2 = 0, # standard error of beta2
+                             pval_beta2 = 0 # p value of beta2
+                             )
+
+```
+
+
+## Between-meta-analysis modelling: reduced model
+
+Full model without consideration of the correctness of the directionality of model slope (beta2) from the first-order meta-analyses.
+
+Use a meta-analytic model to statistically aggregate the model slope regardless of the directionality.
+
+```{r}
+# aggregation of slopes (beta2) for the full model (without consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip <- (model_est_centered.l %>% filter(beta0 < 0))$case
+## first use beta2 as flipped beta2
+model_est_centered.l$beta2_flip <- model_est_centered.l$beta2
+## then replace those with wrong directions
+model_est_centered.l[model_est_centered.l$case %in% beta2_flip, ]$beta2_flip <- model_est_centered.l[model_est_centered.l$case %in% beta2_flip, ]$beta2*(-1)
+
+# rma model
+MMA_beta2_centered.l <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_centered.l, control=list(stepadj = 0.5, maxiter = 10000))
+
+# rma.mv model
+MMA_beta2_centered.l <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | case), method = "REML", data = model_est_centered.l, control=list(stepadj = 0.5, maxiter = 10000))
+
+# multiple model and robust variance estimation
+# extract cluster/grouping variables
+cluster_variables <- data.frame(paper.id = sapply(dat_list, function(x) x$paper.id) %>% unlist(),
+           meta.analysis.paper = sapply(dat_list, function(x) x$meta.analysis.paper) %>% unlist(),
+           meta.analysis.year = sapply(dat_list, function(x) x$meta.analysis.year) %>% unlist(),
+           meta.analysis.id = sapply(dat_list, function(x) x$meta.analysis.id) %>% unlist(),
+           grouped_es = sapply(dat_list, function(x) x$grouped_es) %>% unlist())
+
+# remove those with convergence issues (mentioned early)
+cluster_variables <- subset(cluster_variables, !(meta.analysis.id %in% c(35,67,185,313,324,358,359,406,433)))
+
+# select unique/distinct meta.analysis.id from this grouping variables
+cluster_variables_unique <- cluster_variables %>% distinct(meta.analysis.id, .keep_all = TRUE)
+
+# categorize the publication year of each meta-analysis using 2002 as a cutoff
+
+cluster_variables_unique$windows <- ifelse(cluster_variables_unique$meta.analysis.year < 2002, "before", "after")
+
+# fit a multilevel model
+# first add grouping variables to the dataframe
+model_est_centered.l2 <- model_est_centered.l
+model_est_centered.l2[13:17] <- data.frame(meta.analysis.paper = cluster_variables_unique$meta.analysis.paper,
+                                         meta.analysis.year = cluster_variables_unique$meta.analysis.year,
+                                         windows = cluster_variables_unique$windows,
+                                         grouped_es = cluster_variables_unique$grouped_es) # add grouping variables to dataset used to fit a multilevel model
+
+
+
+# fit a multilevel model
+MMA_beta2_centered.l <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), method = "REML", test = "t", data = model_est_centered.l2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# overall beta2 estimates in different effect size measures
+# reorder
+model_est_centered.l2$grouped_es <- factor(model_est_centered.l2$grouped_es, levels = c("uncommon", "Zr", "lnRR", "SMD"))
+MMA_beta2_centered.l_grouped_es <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(grouped_es) -1, method = "REML", test = "t", data = model_est_centered.l2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# dichotomize year - categorization of year
+MMA_beta2_centered.l_windows <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(windows) -1, method = "REML", test = "t", data = model_est_centered.l2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# use continuous year
+MMA_beta2_centered.l_year <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ meta.analysis.year, method = "REML", test = "t", data = model_est_centered.l2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+
+# use robust error to test significance of model coefficient
+MMA_beta2_centered.l_REV <- robust(MMA_beta2_centered.l, cluster = model_est_centered.l2$meta.analysis.paper) 
+# alternatively
+MMA_beta2_centered.l_REV2 <-coef_test(MMA_beta2_centered.l, vcov = "CR2", cluster = model_est_centered.l2$meta.analysis.paper)
+
+# exclude two extremely large beta2
+# model_est_centered2 <- model_est_centered %>% filter(beta2_flip > -1 & beta2_flip < 1)
+# MMA_beta2_centered <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_centered2)
+
+
+## save as .RData
+# write.csv(model_est_centered.l2, file = "./model_est_centered.l3.csv", row.names = FALSE)
+
+
+# orchard plot for overall beta2 - Figure 1A
+# make a orchard table for making a orchard plot
+MMA_beta2_centered.l_results <- mod_results(MMA_beta2_centered.l, mod = "1", group = "meta.analysis.paper", data = model_est_centered.l2)
+
+png(filename = "./orchard_MMA_beta2_centered.l.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered.l_results,              
+             mod = "1", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  scale_x_discrete(labels = c("Systematic pattern of decline effect in ecology")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+
+## save as .RData
+ save(MMA_beta2_centered.l_grouped_es, file = "./MMA_beta2_centered.l_grouped_es.Rdata") 
+# orchard plot for each effect size's beta2 - Figure 1B
+# make a orchard table for making a orchard plot
+MMA_beta2_centered.l_grouped_es_results <- mod_results(MMA_beta2_centered.l_grouped_es, mod = "grouped_es", group = "meta.analysis.paper", data = model_est_centered.l2)
+
+png(filename = "./beta2_centered.l_grouped_es.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered.l_grouped_es_results,              
+             mod = "grouped_es", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  scale_x_discrete(labels = c("uncommon", "Zr", "lnRR", "SMD")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+# orchard plot for each window's beta2
+MMA_beta2_centered.l_windows_results <- mod_results(MMA_beta2_centered.l_windows, mod = "windows", group = "meta.analysis.paper", data = model_est_centered.l2)
+
+png(filename = "./orchard_MMA_beta2_centered.l_windows.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered.l_windows_results,              
+             mod = "windows", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  # scale_x_discrete(labels = c("Systematic pattern of decline effect in ecology")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+## save as .RData
+# save(MMA_beta2_centered.l_year, file = "./MMA_beta2_centered.l_year.RData") 
+
+# make a orchard table for making a orchard plot - Figure 1C
+# orchard plot for each window's beta2
+png(filename = "./orchard_MMA_beta2_centered.l_year.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+bubble_plot(MMA_beta2_centered.l_year, mod = "meta.analysis.year", 
+            xlab = "Publication year", ylab = "Standardised regression slope of year",
+            k = FALSE,
+            group = "meta.analysis.paper",
+            data = model_est_centered.l2, legend.pos = "none") +
+            ylim(-0.4, 0.4) +
+            theme(axis.text.x = element_text(size = 10, colour = "black"),
+            axis.text.y = element_text(size = 10, colour = "black"),
+            axis.title.x = element_text(size = 10, colour = "black"),
+            plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+
+# differences in beta0
+model_est_centered.l$D <- abs(model_est_centered.l$beta0 - model_est_centered.l$beta0_c)
+# differences in beta0' variance
+model_est_centered.l$D_var <- model_est_centered.l$se_beta0^2 + model_est_centered.l$se_beta0_c^2 + 2*model_est_centered.l$se_beta0*model_est_centered.l$se_beta0_c
+# differences in beta0' SE
+model_est_centered.l$D_sei <- sqrt(model_est_centered.l$D_var)
+
+# get folded mean and variance
+model_est_centered.l$D_folded <- folded_es(mean = model_est_centered.l$D, variance = model_est_centered.l$D_var)
+model_est_centered.l$D_var_folded <- folded_error(mean = model_est_centered.l$D, variance = model_est_centered.l$D_var)
+model_est_centered.l$D_sei_folded <- sqrt(model_est_centered.l$D_var_folded)
+
+# overall decline in effect size magnitude
+MMA_D_centered.l <- rma(yi = D_folded, sei = D_sei_folded, method = "REML", data = model_est_centered.l, control=list(stepadj = 0.5, maxiter = 10000)) # By default, Fisher scoring algorithm did not converge. To deal with this convergence issue, we adjusted the step length of the Fisher scoring algorithm to a desired factor with control=list(stepadj=value) (values below 1 will reduce the step length). Manually change the maximum number of iterations with maxiter = value.
+```
+
+
+## Between-meta-analysis modelling: reduced model
+
+Reduced model with consideration of the correctness of the directionality of model slope (beta2) from the first-order meta-analyses.
+
+Use a meta-analytic model to statistically aggregate the model slope with expected directionality.
+
+```{r}
+# combine model estimates of two scenarios into one dataframe
+model_est_centered.l_corrected <- rbind(model_est_centered.l_s1, model_est_centered.l_s2)
+
+
+# aggregation of slopes (beta2) for the reduced model (with consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip_corrected <- (model_est_centered.l_corrected %>% filter(beta0 < 0))$case
+
+# beta0 > 0, beta2 > 0 # check why no positive beta2
+model_est_centered.l_corrected %>% filter(beta0 > 0, beta2 > 0) 
+
+# beta0 < 0, beta2 < 0 # check why no positive beta2
+model_est_centered.l_corrected %>% filter(beta0 < 0, beta2 < 0) 
+
+
+## first use beta2 as flipped beta2
+model_est_centered.l_corrected$beta2_flip <- model_est_centered.l_corrected$beta2
+## then replace those with wrong directions
+model_est_centered.l_corrected[model_est_centered.l_corrected$case %in% beta2_flip_corrected, ]$beta2_flip <- model_est_centered.l_corrected[model_est_centered.l_corrected$case %in% beta2_flip_corrected, ]$beta2*(-1)
+
+
+# only keep non-zero beta2, because zero beta2 has a wrong direction (when extracting beta2 from fitted models, we specify a value of zero to a wrong direction of beta2) 
+model_est_centered.l_corrected2 <- model_est_centered.l_corrected[model_est_centered.l_corrected$beta2 != 0, ]
+
+# fit a multilevel model
+# first to extract grouping variables
+location <- model_est_centered.l_corrected2$case %in% model_est_centered.l2$case %>% which()
+
+# second to add grouping variables to the dataframe
+model_est_centered.l_corrected2[12:15] <- data.frame(meta.analysis.paper = model_est_centered.l2$meta.analysis.paper[location],
+                                                   meta.analysis.year = model_est_centered.l2$meta.analysis.year[location],
+                                                   windows = model_est_centered.l2$windows[location],
+                                                   grouped_es = model_est_centered.l2$grouped_es[location]) # add grouping variables to dataset used to fit a multilevel model
+
+
+# model fitting
+MMA_beta2_centered.l_corrected <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), method = "REML", test = "t", data = model_est_centered.l_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered.l_corrected_grouped_es <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(grouped_es) -1, method = "REML", test = "t", data = model_est_centered.l_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered.l_corrected_windows <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(windows) -1, method = "REML", test = "t", data = model_est_centered.l_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered.l_corrected_year <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~meta.analysis.year, method = "REML", test = "t", data = model_est_centered.l_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# use robust error to test significance of model coefficient
+MMA_beta2_centered.l_corrected_REV <- robust(MMA_beta2_centered.l_corrected, cluster = model_est_centered.l_corrected2$meta.analysis.paper) 
+# alternatively  
+coef_test(MMA_beta2_centered.l_corrected, vcov = "CR2", cluster = model_est_centered.l_corrected2$meta.analysis.paper)
+
+
+# make a orchard table for making a orchard plot
+MMA_beta2_centered.l_corrected_results <- mod_results(MMA_beta2_centered.l_corrected, mod = "1", group = "meta.analysis.paper", data = model_est_centered.l_corrected2)
+
+
+png(filename = "./orchard_MMA_beta2_centered.l_corrected.png", width = 8, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered.l_corrected_results,              
+             mod = "1", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope (ES ~ year)",
+             transfm = "none", 
+             angle = 90) + 
+  scale_y_continuous(limits = c(-0.1, 0.0), breaks = seq(-0.1, 0.0, 0.05)) +
+  # ylim(-0.1, 0.0) + 
+  scale_x_discrete(labels = c("Decline effect pattern of ecological effect sizes")) + 
+  labs(title = "Decline effect pattern of 254 meta-analyses used to test 134 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off() 
+
+
+# differences in beta0
+model_est_centered.l_corrected2$D <- abs(model_est_centered.l_corrected2$beta0 - model_est_centered.l_corrected2$beta0_c)
+# differences in beta0' variance
+model_est_centered.l_corrected2$D_var <- model_est_centered.l_corrected2$se_beta0^2 + model_est_centered.l_corrected2$se_beta0_c^2 + 2*model_est_centered.l_corrected2$se_beta0*model_est_centered.l_corrected2$se_beta0_c
+# differences in beta0' SE
+model_est_centered.l_corrected2$D_sei <- sqrt(model_est_centered.l_corrected2$D_var)
+
+# get folded mean and variance
+model_est_centered.l_corrected2$D_folded <- folded_es(mean = model_est_centered.l_corrected2$D, variance = model_est_centered.l_corrected2$D_var)
+model_est_centered.l_corrected2$D_var_folded <- folded_error(mean = model_est_centered.l_corrected2$D, variance = model_est_centered.l_corrected2$D_var)
+model_est_centered.l_corrected2$D_sei_folded <- sqrt(model_est_centered.l_corrected2$D_var_folded)
+
+# overall decline in effect size magnitude
+MMA_D_centered.l_corrected <- rma.mv(yi = D_folded, V = D_var_folded, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), method = "REML", test = "t", data = model_est_centered.l_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T) 
+
+# overall decline in each effect size measure
+MMA_D_centered.l_corrected_grouped_es <- rma.mv(yi = D_folded, V = D_var_folded, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(grouped_es) -1, method = "REML", test = "t", data = model_est_centered.l_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T) 
+
+## interpretation of D - back-transform to the original scale
+## sd for each effect size measure
+sd_grouped_es <- aggregate(eff.size ~ grouped_es, dat_all, sd)
+
+sd_grouped_es %>%
+  group_by(grouped_es) %>%
+  mutate(back_trans = eff.size*MMA_D_centered.l_corrected$b[1])
+# Zr
+MMA_D_centered.l_corrected_grouped_es$beta[2]*sd_grouped_es$eff.size[4] # 0.128938
+# SMD
+MMA_D_centered.l_corrected_grouped_es$beta[4]*sd_grouped_es$eff.size[2] # 0.4321826
+# lnRR
+MMA_D_centered.l_corrected_grouped_es$beta[3]*sd_grouped_es$eff.size[1] # 0.1726095
+
+# using dabestr package to create a table for paired comparisons of meta-analytic overall estimates (overall mean) and bias-corrected estimates
+
+dummy <- rep("Dummy", nrow(model_est_centered.l_corrected2))
+wide.data <- 
+  tibble::tibble(
+    `Overall mean` = model_est_centered.l_corrected2$beta0,
+    `Bias-corrected mean` = model_est_centered.l_corrected2$beta0_c,
+     Dummy = dummy, ID = 1:length(dummy), case = model_est_centered.l_corrected2$case)
+
+## find correct direction of slope
+include.point <- which((abs(wide.data$`Overall mean`) - abs(wide.data$`Bias-corrected mean`))>0)
+## table only includes correct data
+wide.data2 <- wide.data[include.point,]
+
+
+my.data <- 
+  wide.data2 %>%
+  tidyr::gather(key = Group, value = Measurement, -ID, -Dummy, -case)
+
+two.group.paired <- 
+  my.data %>%
+  dabest(Group, Measurement, 
+         idx = c("Overall mean", "Bias-corrected mean"), 
+         paired = TRUE, id.col = ID)
+
+paired.plot <- two.group.paired %>% 
+  cohens_d() %>% 
+  plot(#rawplot.ylim = c(-2, 1),
+       #effsize.ylim = c(-2, 1),
+       #rawplot.markersize = 1,
+       #rawplot.groupwidth = 0.4,
+      rawplot.ylabel = "Overall mean",
+      effsize.ylabel = "Differences (bootstrap resampling)",
+      axes.title.fontsize = 14, # default is 14
+      palette = c("Dark2")
+      )
+
+png(filename = "./paired.plot.png", width = 5, height = 4, units = "in", type = "windows", res = 400)
+paired.plot
+dev.off()
+
+
+
+# use ggpaired() in ggpubr to show the pairwise comparisons
+png(filename = "./paired.plot2.png", width = 5, height = 5, units = "in", type = "windows", res = 400)
+ggpaired(wide.data2, cond1 = "Overall mean", cond2 = "Bias-corrected mean",
+    fill = "condition", palette = "jco")
+dev.off()
+
+
+
+
+
+png(filename = "./orchard_MMA_D_centered_corrected.png", width = 6, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_D_centered_corrected, mod = "Int", xlab = "Standardised coefficents", k = TRUE, transfm = "none", angle = 0) + 
+  #xlim(-1.5, 8) + 
+  scale_y_discrete(labels = c("Statistic D")) + 
+  labs(title = " ", y = "") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"))
+dev.off() 
+
+```
+
+## Meta science
+power of the test of decline effect for each meta-analysis and meta-meta-analysis
+
+```{r}
+# retrieve the number of effect sizes (k) and primary studies (N) for each meta-analysis case
+## the number of effect size within meta-analysis case
+k <- NA
+for (i in 1:length(dat_list)) {
+  k[i] <- length(dat_list[[i]]$id.effect.within.study)
+}
+k %>% summary()
+model_est_centered$k <- k
+
+## the number of primary studies within meta-analysis case
+N <- NA
+for (i in 1:length(dat_list)) {
+  N[i] <- length(unique(dat_list[[i]]$study))
+}
+N %>% summary()
+model_est_centered$N <- N
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of each meta-analysis
+#--------------------------------------------------------------------------#
+
+model_est_centered$de.power <- power.ma_Shinichi(mu = model_est_centered$beta2,SE = model_est_centered$se_beta2)
+
+which(model_est_centered$de.power > 0.8) %>% length() # 15
+length(model_est_centered$de.power) # 457
+
+MMA_de.power_centered <- lm(log(de.power) ~ 1, weights = k, data = model_est_centered)
+# this is median
+MMA_de.power_centered$coefficients %>% exp() 
+# this is mean
+(MMA_de.power_centered$coefficients + 0.5*var(log(model_est_centered$de.power))) %>% exp() 
+# confidence interval of median
+confint(MMA_de.power_centered) %>% exp()
+
+png(filename = "./power_distribution.png", width = 6, height = 5, units = "in", res = 400, type = "windows")
+hist(model_est_centered$de.power, xlab = "Power", main = "Power of decline effect test for individual meta-analyses")
+dev.off()
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of meta-meta-analysis
+#--------------------------------------------------------------------------#
+
+power.ma_Shinichi(mu = MMA_beta2_centered$beta[1], SE = MMA_beta2_centered$se[1]) 
+
+power.ma_Shinichi(mu = MMA_beta2_centered_corrected$beta[1], SE = MMA_beta2_centered_corrected$se[1]) 
+
+
+
+library(poolr)
+poolr::fisher(model_est$pval_beta2)
+
+c(fisher = fisher(model_est$pval_beta2)$p,
+liji = fisher(model_est$pval_beta2, adjust = "liji", R = NA)$p,
+emp = fisher(model_est$pval_beta2, adjust = "emp", R = LD)$p,
+brown = fisher(model_est$pval_beta2, adjust = "gen", R = mvnconv(LD))$p)
+
+
+```
+
+
+
+# Scaling
+
+## Identify decline effect for each meta-analysis case
+Within-meta-analysis modelling
+
+```{r}
+
+# detect decline effect for each meta-analytic case - z-scaled year
+model_all_year_scale <- NA
+for (i in 1:length(dat_list)) {
+  model_all_year_scale[i] <- rma.mv(yi = eff.size_zscore, V = var.eff.size, random = list(~1|study/id.effect.within.study), method = "REML", test = "t", mods = ~ study.year.c_zscore, data = dat_list[[i]], sparse = TRUE, control=list(optimizer = "optim")) %>% list()
+}
+
+
+#*************************************************************************#
+#                          Fit time-lag bias models 
+#*************************************************************************#
+
+## check the significance and direction of model regressions from each meta-analysis to identify whether it presents a decline effect
+
+
+### extract model model coefficients and their significance test results
+model_est_scaled <- data.frame(case = names(dat_list),
+                             beta0 = sapply(model_all, function(x) x$beta), # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = sapply(model_all, function(x) x$se), # standard error of beta0
+                             pval_beta0 = sapply(model_all, function(x) x$pval), # p value of beta0
+                             beta0_c = sapply(model_all_year_scale, function(x) x$beta[1]), # beta0_c in equation 2 -  bias corrected overall mean
+                             se_beta0_c = sapply(model_all_year_scale, function(x) x$se[1]), # standard error of beta0_c
+                             pval_beta0_c = sapply(model_all_year_scale, function(x) x$pval[1]), # p valuer of beta0_c
+                             beta2 = sapply(model_all_year_scale, function(x) x$beta[2]), # beta2 in Equation 2 - slope of year 
+                             se_beta2 = sapply(model_all_year_scale, function(x) x$se[2]), # standard error of beta2
+                             pval_beta2 = sapply(model_all_year_scale, function(x) x$pval[2]) # p value of beta2
+                            )
+
+
+#*************************************************************************#
+#             Identify the presence of decline effect 
+#*************************************************************************#
+
+## we next aim to identify the presence of the decline effect for each meta-analysis. We also figure out the wrong directions of slope, which will be used to inform the parameterization of reduced models
+
+## our rational is: for an effect that is expected to be positive, a decline effect would be expressed in a negative value of beta2. In such a case, a slope  with opposing direction (unexpected sign) indicates no detectable decline effect and subsequently does not require correction for such a bias
+
+## we use the product of beta0 (overall mean/intercept obtained from intercept-only model) and beta2 (we deliberately use beta2 although we only have one slope) as the signal, that is, if beta0*beta2 is negative, the examined meta-analysis has a decline effect (beta 2 is in a correct direction)
+
+## so we first to create two new columns to contain the product:  beta0*beta1 and beta0*beta2
+
+model_est_scaled[11] <- data.frame(beta0Tbeta2 = model_est_scaled$beta0 * model_est_scaled$beta2) # model_est_lnRR has 10 column (ncol(model_est)), so we add column 11
+
+## visual check
+model_est_scaled
+
+## identify the decline effect - beta2 with correct sign 
+de_scaled <- model_est_scaled %>% subset(model_est_scaled$beta0Tbeta2 < 0)
+de_scaled$case
+nrow(de_scaled)/length(dat_list)
+## identify significant decline effect - significant beta2 with correct sign 
+de_scaled_sig <- model_est_scaled %>% subset(model_est_scaled$pval_beta2 < 0.05 & model_est_scaled$beta0Tbeta2 < 0)
+## check which meta-analyses have decline effects
+de_scaled_sig$case
+nrow(de_scaled_sig)/length(dat_list)
+
+
+## situation 4
+model_est_scaled %>% subset(model_est_scaled$beta0 < 0.05 & model_est_scaled$beta2 < 0)
+
+#************************************************************************#
+#                       Estimate bias-corrected overall effect
+#************************************************************************#
+
+## if the model slope (beta2) has a wrong direction, we need to take out it when fitting model to estimate the bias-corrected mean (reduced model)
+## if the model slope (beta2) has a correct direction, we do not need to take out it when fitting model to estimate the bias-corrected mean (full-model)
+
+
+
+#*****************************scenario 1****************************#
+## in scenario 1, beta2 has a correct direction, we do not  need to take out year variable from the fixed-effect term in the multilevel model
+beta2c <- model_est_scaled %>% subset(model_est_scaled$beta0Tbeta2 < 0) 
+
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s1_file <- beta2c$case 
+
+## extract model coefficients and their significance test results scenario 1
+model_est_scaled_s1 <- data.frame(case = s1_file,
+                             beta0 = model_est_scaled[model_est_scaled$case %in% s1_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_scaled[model_est_scaled$case %in% s1_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_scaled[model_est_scaled$case %in% s1_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_scaled[model_est_scaled$case %in% s1_file, ]$beta0_c, # beta0_c -  bias corrected overall mean; we can retrieve the estimates of this parameter directly from the early fitted full model (model_est_scaled)
+                             se_beta0_c = model_est_scaled[model_est_scaled$case %in% s1_file, ]$se_beta0_c, # standard error of beta0_c
+                             pval_beta0_c = model_est_scaled[model_est_scaled$case %in% s1_file, ]$pval_beta0_c, # p valuer of beta0_c
+                              beta2 = model_est_scaled[model_est_scaled$case %in% s1_file, ]$beta2, # beta2 in Equation 5 - slope of year;  alternatively, we can retrieve the estimates of this parameter directly from the early fitted full model
+                             se_beta2 = model_est_scaled[model_est_scaled$case %in% s1_file, ]$se_beta2, # standard error of beta2
+                             pval_beta2 = model_est_scaled[model_est_scaled$case %in% s1_file, ]$pval_beta2 # p value of beta2
+                            )
+
+
+#*****************************scenario 2****************************#
+## in scenario 2, beta2 has a wrong direction, we need to take out year variable from the fixed-effect term in the multilevel model
+beta2w <- model_est_scaled %>% subset(model_est_scaled$beta0Tbeta2 > 0) 
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s2_file <- beta2w$case 
+## model fitting -  take out beta2-related predictor (year_pub.l_zscore)
+## this reduced model is equivalent to the null model (intercept-only model - model1-466) we fitted early, because full model only has one predictor (year_pub.l_zscore)
+## alternatively we can directly retrieve model estimates from the early fitted model 
+## extract model coefficients and their significance test results scenario 2
+model_est_scaled_s2 <- data.frame(case = s2_file,
+                             beta0 = model_est_scaled[model_est_scaled$case %in% s2_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_scaled[model_est_scaled$case %in% s2_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_scaled[model_est_scaled$case %in% s2_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_scaled[model_est_scaled$case %in% s2_file, ]$beta0, # beta0_c -  bias corrected overall mean: in this case, it equals to uncorrected overall mean (i.e., beta0) because the fixed effect term (predictor:study.year.c_zscore) is dropped off. in this regard, we can directly retrieve model estimates from the early fitted null model:  model_est_scaled[model_est_scaled$case %in% s2_file, ]$beta0
+                             se_beta0_c = model_est_scaled[model_est_scaled$case %in% s2_file, ]$se_beta0, # standard error of beta0_c
+                             pval_beta0_c = model_est_scaled[model_est_scaled$case %in% s2_file, ]$pval_beta0, # p valuer of beta0_c
+                              beta2 = 0, # beta2-related term (year_pub.l_zscore) is removed from the model; we temporarily use 0, but will remove them prior to meta-meta-analysis
+                             se_beta2 = 0, # standard error of beta2
+                             pval_beta2 = 0 # p value of beta2
+                             )
+
+```
+
+
+## Meta-meta-analysis
+
+```{r}
+# combine model estimates of two scenarios into one dataframe
+model_est_scaled_corrected <- rbind(model_est_scaled_s1, model_est_scaled_s2)
+
+# differences in beta0
+model_est_scaled_corrected$D <- abs(model_est_scaled_corrected$beta0 - model_est_scaled_corrected$beta0_c)
+# differences in beta0' variance
+model_est_scaled_corrected$D_var <- model_est_scaled_corrected$se_beta0^2 + model_est_scaled_corrected$se_beta0_c^2 + 2*model_est_scaled_corrected$se_beta0*model_est_scaled_corrected$se_beta0_c
+# differences in beta0' SE
+model_est_scaled_corrected$D_sei <- sqrt(model_est_scaled_corrected$D_var)
+
+# get folded mean and variance
+model_est_scaled_corrected$D_folded <- folded_es(mean = model_est_scaled_corrected$D, variance = model_est_scaled_corrected$D_var)
+model_est_scaled_corrected$D_var_folded <- folded_error(mean = model_est_scaled_corrected$D, variance = model_est_scaled_corrected$D_var)
+model_est_scaled_corrected$D_sei_folded <- sqrt(model_est_scaled_corrected$D_var_folded)
+
+# overall decline in effect size magnitude
+MMA_D_scaled_corrected <- rma(yi = D_folded, sei = D_sei_folded, method = "REML", data = model_est_scaled_corrected, control=list(stepadj = 0.5, maxiter = 10000)) # By default, Fisher scoring algorithm did not converge. To deal with this convergence issue, we adjusted the step length of the Fisher scoring algorithm to a desired factor with control=list(stepadj=value) (values below 1 will reduce the step length). Manually change the maximum number of iterations with maxiter = value.
+
+## interpretation of D - back-transform to the original scale
+## sd for each dataset
+sd_list <- NA
+for (i in 1:length(dat_list)) {
+  sd_list[i] <- sd(dat_list[[i]]$eff.size)
+}
+summary(sd_list) 
+# exclude extremely large values
+summary(sd_list[sd_list != max(sd_list)])
+summary(sd_list[sd_list < 50])
+MMA_D_corrected$beta[1]*mean(sd_list2[sd_list < 50])
+
+
+
+png(filename = "./orchard_MMA_D_scaled_corrected.png", width = 6, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_D_scaled_corrected, mod = "Int", xlab = "Standardised coefficents", k = TRUE, transfm = "none", angle = 0) + 
+  #xlim(-1.5, 8) + 
+  scale_y_discrete(labels = c("Statistic D")) + 
+  labs(title = " ", y = "") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"))
+dev.off() 
+
+
+# aggregation of slopes (beta2) for the reduced model (with consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip_corrected <- (model_est_scaled_corrected %>% subset(model_est_scaled_corrected$beta0 < 0))$case
+
+# beta0 > 0, beta2 > 0 # check why no positive beta2
+model_est_scaled_corrected %>% subset(model_est_scaled_corrected$beta0 > 0 & model_est_scaled_corrected$beta2 > 0) # no case # model_est_corrected %>% filter(beta0 > 0, beta2 > 0)
+
+# beta0 < 0, beta2 < 0 # check why no positive beta2
+model_est_scaled_corrected %>% subset(model_est_scaled_corrected$beta0 < 0 & model_est_scaled_corrected$beta2 < 0) # no case # model_est_corrected %>% filter(beta0 < 0, beta2 < 0)
+
+
+## first use beta2 as flipped beta2
+model_est_scaled_corrected$beta2_flip <- model_est_scaled_corrected$beta2
+## then replace those with wrong directions
+model_est_scaled_corrected[model_est_scaled_corrected$case %in% beta2_flip_corrected, ]$beta2_flip <- model_est_scaled_corrected[model_est_scaled_corrected$case %in% beta2_flip_corrected, ]$beta2*(-1)
+
+
+MMA_beta2_scaled_corrected <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_scaled_corrected[model_est_scaled_corrected$beta2 != 0, ], control=list(stepadj = 0.5, maxiter = 10000)) # only fit non-zero beta2
+
+# exclude two extremely large beta2
+model_est_scaled_corrected2 <- model_est_scaled_corrected %>% filter(beta2_flip > -2, beta2_flip < 2)
+MMA_beta2_scaled_corrected <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_scaled_corrected2[model_est_scaled_corrected2$beta2 != 0, ], control=list(stepadj = 0.5, maxiter = 10000))
+
+
+png(filename = "./orchard_MMA_beta2_scaled_corrected.png", width = 6, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_scaled_corrected, mod = "Int", xlab = "Standardised coefficents", k = TRUE, transfm = "none", angle = 0) + 
+  #xlim(-1.5, 8) + 
+  scale_y_discrete(labels = c("beta2 (time-lag bias)")) + 
+  labs(title = " ", y = "") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"))
+dev.off() 
+
+
+
+# aggregation of slopes (beta2) for the full model (without consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip <- (model_est_scaled %>% subset(model_est_scaled$beta0 < 0))$case
+## first use beta2 as flipped beta2
+model_est_scaled$beta2_flip <- model_est_scaled$beta2
+## then replace those with wrong directions
+model_est_scaled[model_est_scaled$case %in% beta2_flip, ]$beta2_flip <- model_est_scaled[model_est_scaled$case %in% beta2_flip, ]$beta2*(-1)
+
+MMA_beta2_scaled <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_scaled, control=list(stepadj = 0.5, maxiter = 10000))
+
+# exclude two extremely large beta2
+model_est_scaled2 <- model_est_scaled %>% filter(beta2_flip > -2 & beta2_flip < 2)
+MMA_beta2_scaled <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_scaled2)
+
+
+png(filename = "./orchard_MMA_beta2_scaled.png", width = 6, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_scaled, mod = "Int", xlab = "Standardised coefficents", k = TRUE, transfm = "none", angle = 0) + 
+  #xlim(-1.5, 8) + 
+  scale_y_discrete(labels = c("beta2 (time-lag bias)")) + 
+  labs(title = " ", y = "") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"))
+dev.off() 
+
+
+
+## put two figures together
+MMA_beta2_results <- mod_results(MMA_beta2_scaled, mod = "Int")
+MMA_beta2_corrected_results <- mod_results(MMA_beta2_scaled_corrected, mod = "Int")
+
+MMA_beta2_results2 <- submerge(MMA_beta2_corrected_results, MMA_beta2_results, mix = TRUE) # reverse the order for following visualizations
+
+png(filename = "./orchard_MMA_beta2_scaled_all.png", width = 6, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_results2, mod = "Int", xlab = "Magnitude of decline effect (standardised beta2)", k = TRUE, transfm = "none", angle = 0) + 
+  #xlim(-1.5, 8) + 
+  scale_y_discrete(labels = c("Reduced model \n (with consideration of direction)", "Full model \n (without consideration of direction)")) + 
+  labs(title = " ", y = "") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"))
+dev.off() 
+
+```
+
+## Meta science
+power of the test of decline effect for each meta-analysis and meta-meta-analysis
+
+```{r}
+# retrieve the number of effect sizes (k) and primary studies (N) for each meta-analysis case
+## the number of effect size within meta-analysis case
+k <- NA
+for (i in 1:length(dat_list)) {
+  k[i] <- length(dat_list[[i]]$id.effect.within.study)
+}
+k %>% summary()
+model_est_scaled$k <- k
+
+## the number of primary studies within meta-analysis case
+N <- NA
+for (i in 1:length(dat_list)) {
+  N[i] <- length(unique(dat_list[[i]]$study))
+}
+N %>% summary()
+model_est_scaled$N <- N
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of each meta-analysis
+#--------------------------------------------------------------------------#
+
+model_est_scaled$de.power <- power.ma_Shinichi(mu = model_est_scaled$beta2,SE = model_est_scaled$se_beta2)
+
+MMA_de.power_scaled <- lm(log(de.power) ~ 1, weights = k, data = model_est_scaled)
+# this is median
+MMA_de.power_scaled$coefficients %>% exp() 
+# this is mean
+(MMA_de.power_scaled$coefficients + 0.5*var(log(model_est_scaled$de.power))) %>% exp() 
+# confidence interval of median
+confint(MMA_de.power_scaled) %>% exp()
+
+png(filename = "./power_distribution.png", width = 6, height = 5, units = "in", res = 400, type = "windows")
+hist(model_est_scaled$de.power, xlab = "Power", main = "Power of decline effect test for individual meta-analyses")
+dev.off()
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of meta-meta-analysis
+#--------------------------------------------------------------------------#
+
+power.ma_Shinichi(mu = MMA_beta2_scaled$beta[1], SE = MMA_beta2_scaled$se[1]) 
+
+power.ma_Shinichi(mu = MMA_beta2_scaled_corrected$beta[1], SE = MMA_beta2_scaled_corrected$se[1]) 
+
+
+
+library(poolr)
+poolr::fisher(model_est$pval_beta2)
+
+c(fisher = fisher(model_est$pval_beta2)$p,
+liji = fisher(model_est$pval_beta2, adjust = "liji", R = NA)$p,
+emp = fisher(model_est$pval_beta2, adjust = "emp", R = LD)$p,
+brown = fisher(model_est$pval_beta2, adjust = "gen", R = mvnconv(LD))$p)
+
+
+```
+
+
+# Original scale
+
+## Fit intercept-only meta-analysis
+Obtain overall mean (beta0) for each meta-analysis case
+
+```{r}
+# some datasets can not achieve convergence although we used different numerical optimizer, adjusted different step length. So we delete this dataset before model fitting
+dat_list <- dat_list[names(dat_list) != "MA_35" &
+                     names(dat_list) != "MA_67" &
+                     names(dat_list) != "MA_185" &
+                     names(dat_list) != "MA_313" &
+                     names(dat_list) != "MA_324" &
+                     names(dat_list) != "MA_358" &
+                     names(dat_list) != "MA_359" &
+                     names(dat_list) != "MA_406" &
+                     names(dat_list) != "MA_433"]
+
+
+# fit intercept-only model for each meta-analytic case
+model_all_original <- NA
+for (i in 1:length(dat_list)) {
+  model_all_original[i] <- rma.mv(yi = eff.size, V = var.eff.size, random = list(~1|study/id.effect.within.study), method = "REML", test = "t", data = dat_list[[i]], sparse = TRUE, control=list(optimizer = "optim")) %>% list()
+}
+
+```
+
+## Identify decline effect for each meta-analysis case
+Within-meta-analysis modelling
+
+```{r}
+# detect decline effect for each meta-analytic case - centered year
+model_all_year_original <- NA
+for (i in 1:length(dat_list)) {
+  model_all_year_original[i] <- rma.mv(yi = eff.size, V = var.eff.size, random = list(~1|study/id.effect.within.study), method = "REML", test = "t", mods = ~ study.year.l, data = dat_list[[i]], sparse = TRUE, control=list(optimizer = "optim")) %>% list()
+}
+
+# predict the value of effect sizes when years are at 0, 10, 20, 30, 40, and 50
+predicted_es_original <- NA
+for (i in 1:length(dat_list)) {
+  predicted_es_original[i] <- predict(model_all_year_original[[i]], newmods = c(0, -10, -20, -30, -40, -50), addx=TRUE) %>% list()
+}
+
+# rename the elements
+names(predicted_es_original) <- names(dat_list)
+
+
+#*************************************************************************#
+#                          Fit time-lag bias models 
+#*************************************************************************#
+
+## check the significance and direction of model regressions from each meta-analysis to identify whether it presents a decline effect
+
+
+### extract model model coefficients and their significance test results
+model_est_original <- data.frame(case = names(dat_list),
+                             beta0 = sapply(model_all_original, function(x) x$beta), # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = sapply(model_all_original, function(x) x$se), # standard error of beta0
+                             pval_beta0 = sapply(model_all_original, function(x) x$pval), # p value of beta0
+                             beta0_c = sapply(model_all_year_original, function(x) x$beta[1]), # beta0_c in equation 2 -  bias corrected overall mean
+                             se_beta0_c = sapply(model_all_year_original, function(x) x$se[1]), # standard error of beta0_c
+                             pval_beta0_c = sapply(model_all_year_original, function(x) x$pval[1]), # p valuer of beta0_c
+                             beta2 = sapply(model_all_year_original, function(x) x$beta[2]), # beta2 in Equation 2 - slope of year 
+                             se_beta2 = sapply(model_all_year_original, function(x) x$se[2]), # standard error of beta2
+                             pval_beta2 = sapply(model_all_year_original, function(x) x$pval[2]) # p value of beta2
+                            )
+
+
+#*************************************************************************#
+#             Identify the presence of decline effect 
+#*************************************************************************#
+
+## we next aim to identify the presence of the decline effect for each meta-analysis. We also figure out the wrong directions of slope, which will be used to inform the parameterization of reduced models
+
+## our rational is: for an effect that is expected to be positive, a decline effect would be expressed in a negative value of beta2. In such a case, a slope  with opposing direction (unexpected sign) indicates no detectable decline effect and subsequently does not require correction for such a bias
+
+## we use the product of beta0 (overall mean/intercept obtained from intercept-only model) and beta2 (we deliberately use beta2 although we only have one slope) as the signal, that is, if beta0*beta2 is negative, the examined meta-analysis has a decline effect (beta 2 is in a correct direction)
+
+## so we first to create two new columns to contain the product:  beta0*beta1 and beta0*beta2
+
+model_est_original[11] <- data.frame(beta0Tbeta2 = model_est_original$beta0 * model_est_original$beta2) # model_est_lnRR has 10 column (ncol(model_est)), so we add column 11
+
+## visual check
+model_est_original
+
+## identify the decline effect - beta2 with correct sign 
+de_original <- model_est_original %>% subset(model_est_original$beta0Tbeta2 < 0)
+de_original$case
+nrow(de_original)/length(dat_list)
+## identify significant decline effect - significant beta2 with correct sign 
+de_original_sig <- model_est_original %>% subset(model_est_original$pval_beta2 < 0.05 & model_est_original$beta0Tbeta2 < 0)
+## check which meta-analyses have decline effects
+de_original_sig$case
+nrow(de_original_sig)/length(dat_list)
+
+
+## situation 4
+model_est_original %>% subset(model_est_original$beta0 < 0.05 & model_est_original$beta2 < 0) # model_est_original %>% filter(beta0 < 0.05 & beta2 < 0)
+
+#************************************************************************#
+#                       Estimate bias-corrected overall effect
+#************************************************************************#
+
+## if the model slope (beta2) has a wrong direction, we need to take out it when fitting model to estimate the bias-corrected mean (reduced model)
+## if the model slope (beta2) has a correct direction, we do not need to take out it when fitting model to estimate the bias-corrected mean (full-model)
+
+
+
+#*****************************scenario 1****************************#
+## in scenario 1, beta2 has a correct direction, we do not  need to take out year variable from the fixed-effect term in the multilevel model
+beta2c <- model_est_original %>% subset(model_est_original$beta0Tbeta2 < 0) 
+
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s1_file <- beta2c$case 
+
+## extract model coefficients and their significance test results scenario 1
+model_est_original_s1 <- data.frame(case = s1_file,
+                             beta0 = model_est_original[model_est_original$case %in% s1_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_original[model_est_original$case %in% s1_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_original[model_est_original$case %in% s1_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_original[model_est_original$case %in% s1_file, ]$beta0_c, # beta0_c -  bias corrected overall mean; we can retrieve the estimates of this parameter directly from the early fitted full model (model_est_centered)
+                             se_beta0_c = model_est_original[model_est_original$case %in% s1_file, ]$se_beta0_c, # standard error of beta0_c
+                             pval_beta0_c = model_est_original[model_est_original$case %in% s1_file, ]$pval_beta0_c, # p valuer of beta0_c
+                              beta2 = model_est_original[model_est_original$case %in% s1_file, ]$beta2, # beta2 in Equation 5 - slope of year;  alternatively, we can retrieve the estimates of this parameter directly from the early fitted full model
+                             se_beta2 = model_est_original[model_est_original$case %in% s1_file, ]$se_beta2, # standard error of beta2
+                             pval_beta2 = model_est_centered[model_est_centered$case %in% s1_file, ]$pval_beta2 # p value of beta2
+                            )
+
+
+#*****************************scenario 2****************************#
+## in scenario 2, beta2 has a wrong direction, we need to take out year variable from the fixed-effect term in the multilevel model
+beta2w <- model_est_original %>% subset(model_est_original$beta0Tbeta2 > 0) 
+## reduced model based on scenario 1 - beta2 has a correct direction
+## make a data list which only contains scenario1's data
+s2_file <- beta2w$case 
+## model fitting -  take out beta2-related predictor (year_pub.l_zscore)
+## this reduced model is equivalent to the null model (intercept-only model - model1-466) we fitted early, because full model only has one predictor (year_pub.l_zscore)
+## alternatively we can directly retrieve model estimates from the early fitted model 
+## extract model coefficients and their significance test results scenario 2
+model_est_original_s2 <- data.frame(case = s2_file,
+                             beta0 = model_est_original[model_est_original$case %in% s2_file, ]$beta0, # beta0 in Equation 1 - meta-analytic overall mean
+                             se_beta0 = model_est_original[model_est_original$case %in% s2_file, ]$se_beta0, # standard error of beta0
+                             pval_beta0 = model_est_centered[model_est_centered$case %in% s2_file, ]$pval_beta0, # p value of beta0
+                             beta0_c = model_est_original[model_est_original$case %in% s2_file, ]$beta0, # beta0_c -  bias corrected overall mean: in this case, it equals to uncorrected overall mean (i.e., beta0) because the fixed effect term (predictor:study.year.c_zscore) is dropped off. in this regard, we can directly retrieve model estimates from the early fitted null model:  model_est_centered[model_est_centered$case %in% s2_file, ]$beta0
+                             se_beta0_c = model_est_original[model_est_original$case %in% s2_file, ]$se_beta0, # standard error of beta0_c
+                             pval_beta0_c = model_est_original[model_est_original$case %in% s2_file, ]$pval_beta0, # p valuer of beta0_c
+                              beta2 = 0, # beta2-related term (year_pub.l_zscore) is removed from the model; we temporarily use 0, but will remove them prior to meta-meta-analysis
+                             se_beta2 = 0, # standard error of beta2
+                             pval_beta2 = 0 # p value of beta2
+                             )
+
+```
+
+
+## Between-meta-analysis modelling: reduced model
+
+Full model without consideration of the correctness of the directionality of model slope (beta2) from the first-order meta-analyses.
+
+Use a meta-analytic model to statistically aggregate the model slope regardless of the directionality.
+
+```{r}
+# aggregation of slopes (beta2) for the full model (without consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip <- (model_est_original %>% subset(model_est_original$beta0 < 0))$case
+## first use beta2 as flipped beta2
+model_est_original$beta2_flip <- model_est_original$beta2
+## then replace those with wrong directions
+model_est_original[model_est_original$case %in% beta2_flip, ]$beta2_flip <- model_est_original[model_est_original$case %in% beta2_flip, ]$beta2*(-1)
+
+# rma model
+MMA_beta2_original <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_original, control=list(stepadj = 0.5, maxiter = 10000))
+
+# rma.mv model
+MMA_beta2_original <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | case), method = "REML", data = model_est_original, control=list(stepadj = 0.5, maxiter = 10000))
+
+# multilevel model and robust variance estimation
+# extract cluster/grouping variables
+cluster_variables <- data.frame(paper.id = sapply(dat_list, function(x) x$paper.id) %>% unlist(),
+           meta.analysis.paper = sapply(dat_list, function(x) x$meta.analysis.paper) %>% unlist(),
+           meta.analysis.year = sapply(dat_list, function(x) x$meta.analysis.year) %>% unlist(),
+           meta.analysis.id = sapply(dat_list, function(x) x$meta.analysis.id) %>% unlist(),
+           grouped_es = sapply(dat_list, function(x) x$grouped_es) %>% unlist())
+
+# remove those with convergence issues (mentioned early)
+cluster_variables <- subset(cluster_variables, !(meta.analysis.id %in% c(35,67,185,313,324,358,359,406,433)))
+
+# select unique/distinct meta.analysis.id from this grouping variables
+cluster_variables_unique <- cluster_variables %>% distinct(meta.analysis.id, .keep_all = TRUE)
+
+# categorize the publication year of each meta-analysis using 2002 as a cutoff
+
+cluster_variables_unique$windows <- ifelse(cluster_variables_unique$meta.analysis.year < 2002, "before", "after")
+
+# fit a multilevel model
+# first add grouping variables to the dataframe
+model_est_original2 <- model_est_original
+model_est_original2[13:17] <- data.frame(meta.analysis.paper = cluster_variables_unique$meta.analysis.paper,
+                                         meta.analysis.year = cluster_variables_unique$meta.analysis.year,
+                                         windows = cluster_variables_unique$windows,
+                                         grouped_es = cluster_variables_unique$grouped_es) # add grouping variables to dataset used to fit a multilevel model
+
+MMA_beta2_original <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), method = "REML", test = "t", data = model_est_original2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_original_grouped_es <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(grouped_es) -1, method = "REML", test = "t", data = model_est_original2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+
+# dichotomize year - categorization of year
+MMA_beta2_original_windows <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(windows) -1, method = "REML", test = "t", data = model_est_original2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# use continuous year
+MMA_beta2_original_year <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ meta.analysis.year, method = "REML", test = "t", data = model_est_original2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+
+# use robust error to test significance of model coefficient
+MMA_beta2_original_REV <- robust(MMA_beta2_original, cluster = model_est_original2$meta.analysis.paper) 
+# alternatively
+MMA_beta2_original_REV2 <-coef_test(MMA_beta2_original, vcov = "CR2", cluster = model_est_original2$meta.analysis.paper)
+
+# exclude two extremely large beta2
+# model_est_centered2 <- model_est_centered %>% filter(beta2_flip > -1 & beta2_flip < 1)
+# MMA_beta2_centered <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_centered2)
+
+
+# orchard plot for overall beta2
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_results <- mod_results(MMA_beta2_centered, mod = "1", group = "meta.analysis.paper", data = model_est_centered2)
+
+
+
+png(filename = "./orchard_MMA_beta2_centered.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_results,              
+             mod = "1", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  scale_x_discrete(labels = c("Systematic pattern of decline effect in ecology")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+
+# orchard plot for each effect size's beta2
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_grouped_es_results <- mod_results(MMA_beta2_centered_grouped_es, mod = "grouped_es", group = "meta.analysis.paper", data = model_est_centered2)
+
+# MMA_beta2_centered_grouped_es_results$mod_table$name <- factor(MMA_beta2_centered_grouped_es_results$mod_table$name, levels = c("Uncommon","Zr","LnRR","SMD"))
+
+png(filename = "./orchard_MMA_beta2_centered_grouped_es.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_grouped_es_results,              
+             mod = "grouped_es", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  # scale_x_discrete(labels = c("Systematic pattern of decline effect in ecology")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+
+# orchard plot for each window's beta2
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_windows_results <- mod_results(MMA_beta2_centered_windows, mod = "windows", group = "meta.analysis.paper", data = model_est_centered2)
+
+png(filename = "./orchard_MMA_beta2_centered_windows.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_windows_results,              
+             mod = "windows", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope of year",
+             transfm = "none", 
+             angle = 90) + 
+  ylim(-0.1, 0.1) + 
+  # scale_x_discrete(labels = c("Systematic pattern of decline effect in ecology")) + 
+  # labs(title = "Temporal trajectory of > 100,000 effect sizes from 457 meta-analyses used to test 232 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+
+# orchard plot for each window's beta2
+png(filename = "./orchard_MMA_beta2_centered_year.png", width = 6, height = 3.5, units = "in", res = 400, type = "windows")
+bubble_plot(MMA_beta2_centered_year, mod = "meta.analysis.year", 
+            xlab = "Publication year", ylab = "Standardised regression slope of year",
+            group = "meta.analysis.paper",
+            data = model_est_centered2, legend.pos = "none") +
+            theme(axis.text.x = element_text(size = 10, colour = "black"),
+            axis.text.y = element_text(size = 10, colour = "black"),
+            axis.title.x = element_text(size = 10, colour = "black"),
+            plot.title = element_text(size = 10, colour = "black"))
+dev.off()
+
+# differences in beta0
+model_est_original2$D <- abs(model_est_original2$beta0 - model_est_original2$beta0_c)
+# differences in beta0' variance
+model_est_original2$D_var <- model_est_original2$se_beta0^2 + model_est_original2$se_beta0_c^2 + 2*model_est_original2$se_beta0*model_est_original2$se_beta0_c
+# differences in beta0' SE
+model_est_original2$D_sei <- sqrt(model_est_original2$D_var)
+
+# get folded mean and variance
+model_est_original2$D_folded <- folded_es(mean = model_est_original2$D, variance = model_est_original2$D_var)
+model_est_original2$D_var_folded <- folded_error(mean = model_est_original2$D, variance = model_est_original2$D_var)
+model_est_original2$D_sei_folded <- sqrt(model_est_original2$D_var_folded)
+
+# overall decline in effect size magnitude
+MMA_D_original <- rma(yi = D_folded, sei = D_sei_folded, method = "REML", data = model_est_original2, subset = grouped_es == "Zr", control=list(stepadj = 0.5, maxiter = 10000)) # By default, Fisher scoring algorithm did not converge. To deal with this convergence issue, we adjusted the step length of the Fisher scoring algorithm to a desired factor with control=list(stepadj=value) (values below 1 will reduce the step length). Manually change the maximum number of iterations with maxiter = value.
+```
+
+
+## Between-meta-analysis modelling: reduced model
+
+Reduced model with consideration of the correctness of the directionality of model slope (beta2) from the first-order meta-analyses.
+
+Use a meta-analytic model to statistically aggregate the model slope with expected directionality.
+
+```{r}
+# combine model estimates of two scenarios into one dataframe
+model_est_centered_corrected <- rbind(model_est_centered_s1, model_est_centered_s2)
+
+
+# aggregation of slopes (beta2) for the reduced model (with consideration of direction of beta2)
+## flip beta2 prior to modelling fitting when beta0 < 0
+beta2_flip_corrected <- (model_est_centered_corrected %>% subset(model_est_centered_corrected$beta0 < 0))$case
+
+# beta0 > 0, beta2 > 0 # check why no positive beta2
+model_est_centered_corrected %>% subset(model_est_centered_corrected$beta0 > 0 & model_est_centered_corrected$beta2 > 0) # no case # model_est_corrected %>% filter(beta0 > 0, beta2 > 0)
+
+# beta0 < 0, beta2 < 0 # check why no positive beta2
+model_est_centered_corrected %>% subset(model_est_centered_corrected$beta0 < 0 & model_est_centered_corrected$beta2 < 0) # no case # model_est_corrected %>% filter(beta0 < 0, beta2 < 0)
+
+
+## first use beta2 as flipped beta2
+model_est_centered_corrected$beta2_flip <- model_est_centered_corrected$beta2
+## then replace those with wrong directions
+model_est_centered_corrected[model_est_centered_corrected$case %in% beta2_flip_corrected, ]$beta2_flip <- model_est_centered_corrected[model_est_centered_corrected$case %in% beta2_flip_corrected, ]$beta2*(-1)
+
+# fit a random effect model
+MMA_beta2_centered_corrected <- rma(yi = beta2_flip, sei = se_beta2, method = "REML", data = model_est_centered_corrected[model_est_centered_corrected$beta2 != 0, ], control=list(stepadj = 0.5, maxiter = 10000)) # only fit non-zero beta2
+
+# only keep non-zero beta2, because zero beta2 has a wrong direction (when extracting beta2 from fitted models, we specify a value of zero to a wrong direction of beta2) 
+model_est_centered_corrected2 <- model_est_centered_corrected[model_est_centered_corrected$beta2 != 0, ]
+
+# fit a multilevel model
+# first to extract grouping variables
+location <- model_est_centered_corrected2$case %in% model_est_centered2$case %>% which()
+
+# second to add grouping variables to the dataframe
+model_est_centered_corrected2[18:21] <- data.frame(meta.analysis.paper = model_est_centered2$meta.analysis.paper[location],
+                                                   meta.analysis.year = model_est_centered2$meta.analysis.year[location],
+                                                   windows = model_est_centered2$windows[location],
+                                                   grouped_es = model_est_centered2$grouped_es[location]) # add grouping variables to dataset used to fit a multilevel model
+
+
+# model fitting
+MMA_beta2_centered_corrected <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# beta2 estimates in different effect size measures
+
+MMA_beta2_centered_corrected_grouped_es <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(grouped_es) -1, method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered_corrected_windows <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~ I(windows) -1, method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+MMA_beta2_centered_corrected_year <- rma.mv(yi = beta2_flip, V = se_beta2^2, random = list(~ 1 | meta.analysis.paper, ~ 1 | case), mods = ~meta.analysis.year, method = "REML", test = "t", data = model_est_centered_corrected2, control=list(stepadj = 0.5, maxiter = 10000), sparse = T)
+
+# use robust error to test significance of model coefficient
+MMA_beta2_centered_corrected_REV <- robust(MMA_beta2_centered_corrected, cluster = model_est_centered_corrected2$meta.analysis.paper) 
+# alternatively  
+coef_test(MMA_beta2_centered_corrected, vcov = "CR2", cluster = model_est_centered_corrected2$meta.analysis.paper)
+
+
+# make a orchard table for making a orchard plot
+MMA_beta2_centered_corrected_results <- mod_results(MMA_beta2_centered_corrected, mod = "1", group = "meta.analysis.paper", data = model_est_centered_corrected2)
+
+png(filename = "./orchard_MMA_beta2_centered_corrected.png", width = 8, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_beta2_centered_corrected_results,              
+             mod = "1", group = "meta.analysis.paper", 
+             k = FALSE, g = FALSE,
+             trunk.size = 1, branch.size = 1, twig.size = 0.5,
+             xlab = "Standardised regression slope (ES ~ year)",
+             transfm = "none", 
+             angle = 90) + 
+  scale_y_continuous(limits = c(-0.1, 0.0), breaks = seq(-0.1, 0.0, 0.05)) +
+  # ylim(-0.1, 0.0) + 
+  scale_x_discrete(labels = c("Decline effect pattern of ecological effect sizes")) + 
+  labs(title = "Decline effect pattern of 254 meta-analyses used to test 134 ecological hypotheses") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"))
+dev.off() 
+
+
+# differences in beta0
+model_est_centered_corrected$D <- abs(model_est_centered_corrected$beta0 - model_est_centered_corrected$beta0_c)
+# differences in beta0' variance
+model_est_centered_corrected$D_var <- model_est_centered_corrected$se_beta0^2 + model_est_centered_corrected$se_beta0_c^2 + 2*model_est_centered_corrected$se_beta0*model_est_centered_corrected$se_beta0_c
+# differences in beta0' SE
+model_est_centered_corrected$D_sei <- sqrt(model_est_centered_corrected$D_var)
+
+# get folded mean and variance
+model_est_centered_corrected$D_folded <- folded_es(mean = model_est_centered_corrected$D, variance = model_est_centered_corrected$D_var)
+model_est_centered_corrected$D_var_folded <- folded_error(mean = model_est_centered_corrected$D, variance = model_est_centered_corrected$D_var)
+model_est_centered_corrected$D_sei_folded <- sqrt(model_est_centered_corrected$D_var_folded)
+
+# overall decline in effect size magnitude
+MMA_D_centered_corrected <- rma(yi = D_folded, sei = D_sei_folded, method = "REML", data = model_est_centered_corrected, control=list(stepadj = 0.5, maxiter = 10000)) # By default, Fisher scoring algorithm did not converge. To deal with this convergence issue, we adjusted the step length of the Fisher scoring algorithm to a desired factor with control=list(stepadj=value) (values below 1 will reduce the step length). Manually change the maximum number of iterations with maxiter = value.
+
+## interpretation of D - back-transform to the original scale
+## sd for each effect size measure
+
+sd_grouped_es <- aggregate(eff.size ~ grouped_es, dat_all, sd)
+
+
+sd_grouped_es %>%
+  group_by(grouped_es) %>%
+  mutate(back_trans = eff.size*MMA_D_centered_corrected$b[1])
+
+
+
+
+
+png(filename = "./orchard_MMA_D_centered_corrected.png", width = 6, height = 4, units = "in", res = 400, type = "windows")
+orchard_plot(MMA_D_centered_corrected, mod = "Int", xlab = "Standardised coefficents", k = TRUE, transfm = "none", angle = 0) + 
+  #xlim(-1.5, 8) + 
+  scale_y_discrete(labels = c("Statistic D")) + 
+  labs(title = " ", y = "") +
+  theme(axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"))
+dev.off() 
+
+```
+
+## Meta science
+power of the test of decline effect for each meta-analysis and meta-meta-analysis
+
+```{r}
+# retrieve the number of effect sizes (k) and primary studies (N) for each meta-analysis case
+## the number of effect size within meta-analysis case
+k <- NA
+for (i in 1:length(dat_list)) {
+  k[i] <- length(dat_list[[i]]$id.effect.within.study)
+}
+k %>% summary()
+model_est_centered$k <- k
+
+## the number of primary studies within meta-analysis case
+N <- NA
+for (i in 1:length(dat_list)) {
+  N[i] <- length(unique(dat_list[[i]]$study))
+}
+N %>% summary()
+model_est_centered$N <- N
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of each meta-analysis
+#--------------------------------------------------------------------------#
+
+model_est_centered$de.power <- power.ma_Shinichi(mu = model_est_centered$beta2,SE = model_est_centered$se_beta2)
+
+which(model_est_centered$de.power > 0.8) %>% length() # 15
+length(model_est_centered$de.power) # 457
+
+MMA_de.power_centered <- lm(log(de.power) ~ 1, weights = k, data = model_est_centered)
+# this is median
+MMA_de.power_centered$coefficients %>% exp() 
+# this is mean
+(MMA_de.power_centered$coefficients + 0.5*var(log(model_est_centered$de.power))) %>% exp() 
+# confidence interval of median
+confint(MMA_de.power_centered) %>% exp()
+
+png(filename = "./power_distribution.png", width = 6, height = 5, units = "in", res = 400, type = "windows")
+hist(model_est_centered$de.power, xlab = "Power", main = "Power of decline effect test for individual meta-analyses")
+dev.off()
+
+#--------------------------------------------------------------------------#
+#  two-tailed power for the test of decline effect of meta-meta-analysis
+#--------------------------------------------------------------------------#
+
+power.ma_Shinichi(mu = MMA_beta2_centered$beta[1], SE = MMA_beta2_centered$se[1]) 
+
+power.ma_Shinichi(mu = MMA_beta2_centered_corrected$beta[1], SE = MMA_beta2_centered_corrected$se[1]) 
+
+```
+
+
