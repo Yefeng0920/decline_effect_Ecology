@@ -1,6 +1,6 @@
 ## Article
 
-*Yefeng Yang, Malgorzata Lagisz, Shinichi Nakagawa, 2022. Decline effects are rare in ecology: Comment. EcoEvoRxiv (https://ecoevorxiv.org/qc7bx/).*
+*Yang, Yefeng, Malgorzata Lagisz, and Shinichi Nakagawa. 2022. “Decline Effects Are Rare in Ecology: Comment.” EcoEvoRxiv. June 6. doi:10.32942/osf.io/qc7bx.*
 
 ## Contents
 
